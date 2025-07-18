@@ -11,11 +11,13 @@ const Index = () => {
   
   const [mkorUnits, setMkorUnits] = useState<MkorUnit[]>([
     {
+      id: 'mkor-1',
       name: 'DN-700-1',
       start: format(addDays(today, 2), 'yyyy-MM-dd'),
       segments: [3, 1, 7, 2], // [транзит, погрузка, работа, ремонт]
     },
     {
+      id: 'mkor-2',
       name: 'DN-800-2', 
       start: format(addDays(today, 5), 'yyyy-MM-dd'),
       segments: [2, 1, 6, 1],
@@ -30,6 +32,7 @@ const Index = () => {
   const handleAddMkor = () => {
     const newMkorNumber = mkorUnits.length + 1;
     const newMkor: MkorUnit = {
+      id: `mkor-${Date.now()}`, // Уникальный ID
       name: `DN-900-${newMkorNumber}`,
       start: format(addDays(today, 2), 'yyyy-MM-dd'),
       segments: [2, 1, 5, 1], // Стандартные сегменты
@@ -52,6 +55,7 @@ const Index = () => {
           startDate={startDate}
           endDate={endDate}
           mkorUnits={mkorUnits}
+          onMkorUnitsChange={setMkorUnits}
         />
         
         <TransportChart
