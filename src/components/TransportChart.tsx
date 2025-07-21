@@ -3,6 +3,7 @@ import { Card } from '@/components/ui/card';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { format, eachDayOfInterval, parseISO } from 'date-fns';
 import { ru } from 'date-fns/locale';
+import { MkorUnit, getMkorStageOnDate, MKOR_SPECS } from '@/types/mkor';
 
 interface TooltipProps {
   active?: boolean;
@@ -13,29 +14,51 @@ interface TooltipProps {
 interface TransportChartProps {
   startDate: string;
   endDate: string;
+  mkorUnits: MkorUnit[];
 }
 
 export const TransportChart: React.FC<TransportChartProps> = ({
   startDate,
   endDate,
+  mkorUnits,
 }) => {
   const days = eachDayOfInterval({
     start: parseISO(startDate),
     end: parseISO(endDate),
   });
 
-  // Примерные данные для графика
-  const generateData = () => {
-    return days.map((day, index) => ({
-      date: format(day, 'dd.MM', { locale: ru }),
-      fullDate: format(day, 'dd MMMM', { locale: ru }),
-      tractors: Math.floor(Math.random() * 4) + 2, // 2-5
-      trucks: Math.floor(Math.random() * 3) + 1,   // 1-3  
-      trailers: Math.floor(Math.random() * 3) + 1, // 1-3
-    }));
+  // Расчет реальной загрузки транспорта на основе МКОР
+  const calculateTransportLoad = () => {
+    return days.map((day) => {
+      let tractors = 0;
+      let trailers = 0;
+      let lowLoaders = 0;
+
+      // Проходим по всем МКОР и проверяем их статус на этот день
+      mkorUnits.forEach((mkor) => {
+        const stageInfo = getMkorStageOnDate(mkor, day);
+        
+        if (stageInfo && stageInfo.requiresTransport) {
+          const specs = MKOR_SPECS[mkor.diameter];
+          if (specs) {
+            tractors += specs.tractors;
+            trailers += specs.trailers;
+            lowLoaders += specs.lowLoaders;
+          }
+        }
+      });
+
+      return {
+        date: format(day, 'dd.MM', { locale: ru }),
+        fullDate: format(day, 'dd MMMM', { locale: ru }),
+        tractors,
+        trailers,
+        lowLoaders,
+      };
+    });
   };
 
-  const data = generateData();
+  const data = calculateTransportLoad();
 
   const CustomTooltip: React.FC<TooltipProps> = ({ active, payload, label }) => {
     if (active && payload && payload.length) {
@@ -89,21 +112,21 @@ export const TransportChart: React.FC<TransportChartProps> = ({
               />
               <Line
                 type="monotone"
-                dataKey="trucks"
+                dataKey="trailers"
                 stroke="hsl(var(--loading))"
-                strokeWidth={3}
-                name="Фуры"
-                dot={{ fill: 'hsl(var(--loading))', strokeWidth: 2, r: 4 }}
-                activeDot={{ r: 6, stroke: 'hsl(var(--loading))', strokeWidth: 2 }}
+                strokeWidth={2}
+                name="Прицепы"
+                dot={{ fill: 'hsl(var(--loading))', strokeWidth: 1, r: 3 }}
+                activeDot={{ r: 5, stroke: 'hsl(var(--loading))', strokeWidth: 1 }}
               />
               <Line
                 type="monotone"
-                dataKey="trailers"
+                dataKey="lowLoaders"
                 stroke="hsl(var(--working))"
-                strokeWidth={3}
+                strokeWidth={2}
                 name="Траллы"
-                dot={{ fill: 'hsl(var(--working))', strokeWidth: 2, r: 4 }}
-                activeDot={{ r: 6, stroke: 'hsl(var(--working))', strokeWidth: 2 }}
+                dot={{ fill: 'hsl(var(--working))', strokeWidth: 1, r: 3 }}
+                activeDot={{ r: 5, stroke: 'hsl(var(--working))', strokeWidth: 1 }}
               />
             </LineChart>
           </ResponsiveContainer>
