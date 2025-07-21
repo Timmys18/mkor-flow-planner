@@ -161,7 +161,7 @@ const SortableMkorRow: React.FC<SortableMkorRowProps> = ({
           <div className="text-sm flex items-center gap-1">
             {mkor.name}
             {!isAvailable && (
-              <AlertTriangle className="w-3 h-3 text-warning" title="Недоступен до даты поступления" />
+              <AlertTriangle className="w-3 h-3 text-warning" />
             )}
           </div>
           <div className="text-xs text-muted-foreground flex items-center gap-1">

@@ -5,7 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card } from '@/components/ui/card';
 import { Edit, Trash2, Calendar, Settings } from 'lucide-react';
-import { MkorUnit } from './MkorTimeline';
+import { MkorUnit } from '../types/mkor';
 
 interface MkorEditDialogProps {
   mkor: MkorUnit;
