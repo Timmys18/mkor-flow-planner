@@ -139,7 +139,7 @@ const SortableMkorRow: React.FC<SortableMkorRowProps> = ({
     onMkorDrag(mkor.id, newStartDate);
   };
 
-  const totalDays = mkor.segments.reduce((sum, segment) => sum + segment, 0);
+  const totalDays = Array.isArray(mkor.segments) ? mkor.segments.reduce((sum, segment) => sum + segment, 0) : 0;
   const isAvailable = isMkorAvailable(mkor, format(new Date(), 'yyyy-MM-dd'));
   const specs = MKOR_SPECS[mkor.diameter];
 
@@ -325,6 +325,24 @@ export const MkorTimeline: React.FC<MkorTimelineProps> = ({
     onMkorUnitsChange(newUnits);
   };
 
+  // Фильтруем только МКОР с работами
+  const mkorWithJobs = mkorUnits.filter(unit => Array.isArray(unit.jobs) && unit.jobs.length > 0);
+
+  // Для каждого МКОР и каждой работы строим отдельный блок
+  const expandedUnits = mkorWithJobs.flatMap(unit =>
+    (unit.jobs || []).map((job, idx) => ({
+      ...unit,
+      start: job.start,
+      jobIndex: idx,
+      name: unit.jobs && unit.jobs.length > 1 ? `${unit.name} (${idx + 1})` : unit.name
+    }))
+  );
+
+  // Удаляю условие возврата пустого div. Всегда рендерю основной layout.
+  // if (expandedUnits.length === 0) {
+  //   return <div />;
+  // }
+
   return (
     <Card className="bg-gradient-card border-border shadow-card overflow-hidden">
       <div className="p-6">
@@ -364,10 +382,10 @@ export const MkorTimeline: React.FC<MkorTimelineProps> = ({
               onDragStart={handleDragStart}
               onDragEnd={handleDragEnd}
             >
-              <SortableContext items={mkorUnits.map(unit => unit.id)} strategy={verticalListSortingStrategy}>
-                {mkorUnits.map((mkor) => (
+              <SortableContext items={expandedUnits.map(unit => unit.id + '-' + unit.start)} strategy={verticalListSortingStrategy}>
+                {expandedUnits.length > 0 && expandedUnits.map((mkor) => (
                   <SortableMkorRow
-                    key={mkor.id}
+                    key={mkor.id + '-' + mkor.start}
                     mkor={mkor}
                     days={days}
                     onSegmentDrag={handleSegmentDrag}

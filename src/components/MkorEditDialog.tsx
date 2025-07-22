@@ -5,7 +5,9 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card } from '@/components/ui/card';
 import { Edit, Trash2, Calendar, Settings } from 'lucide-react';
-import { MkorUnit } from '../types/mkor';
+import { format } from 'date-fns';
+import { Calendar as CalendarIcon } from 'lucide-react';
+import { MkorUnit, MkorJob } from '../types/mkor';
 
 interface MkorEditDialogProps {
   mkor: MkorUnit;
@@ -22,6 +24,41 @@ export const MkorEditDialog: React.FC<MkorEditDialogProps> = ({
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [editedMkor, setEditedMkor] = useState<MkorUnit>(mkor);
+  const [newJobDate, setNewJobDate] = useState('');
+  const [jobError, setJobError] = useState('');
+
+  // Проверка: дата не раньше поставки и не пересекается с существующими работами
+  const canAddJob = (date: string) => {
+    if (!date) return false;
+    if (date < editedMkor.availableFrom) return false;
+    if (editedMkor.jobs) {
+      for (const job of editedMkor.jobs) {
+        // Работа не может начинаться до окончания предыдущей
+        const prevStart = new Date(job.start);
+        const prevEnd = new Date(prevStart);
+        prevEnd.setDate(prevEnd.getDate() + editedMkor.segments.reduce((a, b) => a + b, 0));
+        const newStart = new Date(date);
+        if (newStart >= prevStart && newStart < prevEnd) return false;
+      }
+    }
+    return true;
+  };
+
+  const handleAddJob = () => {
+    if (!canAddJob(newJobDate)) {
+      setJobError('Нельзя назначить работу на выбранную дату');
+      return;
+    }
+    const newJobs = [...(editedMkor.jobs || []), { start: newJobDate }];
+    setEditedMkor({ ...editedMkor, jobs: newJobs });
+    setNewJobDate('');
+    setJobError('');
+  };
+
+  const handleDeleteJob = (idx: number) => {
+    const newJobs = (editedMkor.jobs || []).filter((_, i) => i !== idx);
+    setEditedMkor({ ...editedMkor, jobs: newJobs });
+  };
 
   const handleSave = () => {
     onSave(editedMkor);
@@ -109,6 +146,32 @@ export const MkorEditDialog: React.FC<MkorEditDialogProps> = ({
               </div>
             </div>
           </Card>
+
+          {/* Работы */}
+          <div className="space-y-3">
+            <Label className="text-foreground font-medium">Работы</Label>
+            <ul className="mb-2">
+              {(editedMkor.jobs || []).map((job, idx) => (
+                <li key={job.start} className="flex items-center gap-2 text-sm text-foreground">
+                  <span>{format(new Date(job.start), 'dd.MM.yyyy')}</span>
+                  <Button size="icon" variant="destructive" onClick={() => handleDeleteJob(idx)}><Trash2 className="w-4 h-4" /></Button>
+                </li>
+              ))}
+            </ul>
+            <div className="flex items-center gap-2">
+              <Input
+                type="date"
+                min={editedMkor.availableFrom}
+                value={newJobDate}
+                onChange={e => setNewJobDate(e.target.value)}
+                className="w-40 bg-secondary border-border text-foreground"
+              />
+              <Button onClick={handleAddJob} className="bg-primary text-white px-3 py-1 flex items-center gap-1">
+                <CalendarIcon className="w-4 h-4" /> Добавить работу
+              </Button>
+            </div>
+            {jobError && <div className="text-destructive text-xs mt-1">{jobError}</div>}
+          </div>
 
           {/* Действия */}
           <div className="flex gap-3">

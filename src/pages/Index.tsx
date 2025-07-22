@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { MkorHeader } from '@/components/MkorHeader';
 import { MkorTimeline } from '@/components/MkorTimeline';
@@ -10,57 +10,63 @@ import { MkorUnit, MkorInventory, createMkorUnit } from '@/types/mkor';
 const Index = () => {
   const today = new Date();
   const [startDate, setStartDate] = useState(format(today, 'yyyy-MM-dd'));
-  const [endDate, setEndDate] = useState(format(addDays(today, 30), 'yyyy-MM-dd'));
-  
-  // Инвентарь МКОР - откуда берем установки для планирования
-  const [inventory, setInventory] = useState<MkorInventory[]>([
-    {
-      diameter: 700,
-      count: 2,
-      availableFrom: format(today, 'yyyy-MM-dd')
-    },
-    {
-      diameter: 800,
-      count: 1,
-      availableFrom: format(addDays(today, -10), 'yyyy-MM-dd')
-    }
-  ]);
-  
-  // Планируемые МКОР - что отображается на временной шкале
-  const [mkorUnits, setMkorUnits] = useState<MkorUnit[]>([
-    createMkorUnit(700, format(addDays(today, 2), 'yyyy-MM-dd'), format(today, 'yyyy-MM-dd'), 1),
-    createMkorUnit(800, format(addDays(today, 5), 'yyyy-MM-dd'), format(addDays(today, -10), 'yyyy-MM-dd'), 1),
-  ]);
+  const [endDate, setEndDate] = useState(format(addDays(today, 730), 'yyyy-MM-dd'));
+  const [inventory, setInventory] = useState<MkorInventory[]>([]);
+  const [mkorUnits, setMkorUnits] = useState<MkorUnit[]>([]);
+
+  // Функция для загрузки МКОР с сервера
+  const fetchMkorUnits = async () => {
+    const res = await fetch('/api/mkor');
+    const data = await res.json();
+    setMkorUnits(data);
+  };
+
+  // Функция для загрузки инвентаря
+  const fetchInventory = async () => {
+    const res = await fetch('/api/inventory');
+    const data = await res.json();
+    setInventory(data);
+  };
+
+  // Загрузка данных с API при монтировании
+  useEffect(() => {
+    fetchInventory();
+    fetchMkorUnits();
+  }, []);
 
   const handleDateChange = (newStartDate: string, newEndDate: string) => {
     setStartDate(newStartDate);
     setEndDate(newEndDate);
   };
 
-  const handleAddMkor = () => {
-    // Найдем доступные диаметры из инвентаря
+  // Добавление МКОР через API
+  const handleAddMkor = async () => {
     const availableDiameters = inventory.filter(item => item.count > 0);
     if (availableDiameters.length === 0) {
       alert('Нет доступных МКОР в инвентаре');
       return;
     }
-
-    // Возьмем первый доступный диаметр
     const selectedInventory = availableDiameters[0];
     const diameter = selectedInventory.diameter;
-    
-    // Определим номер для нового МКОР этого диаметра
     const existingCount = mkorUnits.filter(unit => unit.diameter === diameter).length;
     const newNumber = existingCount + 1;
-    
     const newMkor = createMkorUnit(
       diameter,
       format(addDays(today, 2), 'yyyy-MM-dd'),
       selectedInventory.availableFrom,
       newNumber
     );
-    
-    setMkorUnits([...mkorUnits, newMkor]);
+    await fetch('/api/mkor', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newMkor)
+    });
+    fetchMkorUnits();
+  };
+
+  // Обновление МКОР (например, после редактирования или удаления работы)
+  const handleMkorUnitsChange = async () => {
+    await fetchMkorUnits();
   };
 
   return (
@@ -84,7 +90,7 @@ const Index = () => {
               startDate={startDate}
               endDate={endDate}
               mkorUnits={mkorUnits}
-              onMkorUnitsChange={setMkorUnits}
+              onMkorUnitsChange={handleMkorUnitsChange}
             />
             
             <TransportChart
@@ -98,6 +104,8 @@ const Index = () => {
             <MkorInventoryTab
               inventory={inventory}
               onInventoryChange={setInventory}
+              mkorUnits={mkorUnits}
+              onMkorUnitsChange={handleMkorUnitsChange}
             />
           </TabsContent>
         </Tabs>

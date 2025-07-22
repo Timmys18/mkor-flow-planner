@@ -1,0 +1,34 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model MkorUnit {
+  id            String      @id @default(cuid())
+  name          String
+  diameter      Int
+  availableFrom DateTime
+  segments      String      // JSON: [транзит, разгрузка, работа, погрузка, транзит на ТОИР, ТОИР]
+  jobs          MkorJob[]
+}
+
+model MkorJob {
+  id        String   @id @default(cuid())
+  start     DateTime
+  mkorUnit  MkorUnit @relation(fields: [mkorUnitId], references: [id])
+  mkorUnitId String
+}
+
+model MkorInventory {
+  id            String   @id @default(cuid())
+  diameter      Int
+  count         Int
+  availableFrom DateTime
+}

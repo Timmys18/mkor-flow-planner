@@ -1,5 +1,7 @@
 // Типы данных МКОР на основе технических характеристик
 
+import { differenceInCalendarDays } from 'date-fns';
+
 export interface MkorSpecs {
   diameter: number;
   operationalCycle: number; // общий операционный цикл в днях
@@ -14,6 +16,11 @@ export interface MkorSpecs {
   lowLoaders: number; // количество тралов
 }
 
+export interface MkorJob {
+  start: string; // дата начала работы
+  // можно добавить описание, id и т.д.
+}
+
 export interface MkorUnit {
   id: string;
   diameter: number;
@@ -21,9 +28,11 @@ export interface MkorUnit {
   start: string;
   availableFrom: string; // дата поступления от завода
   segments: number[]; // [транзит на объект, разгрузка, работа, погрузка, транзит на ТОИР, ТОИР]
+  jobs?: MkorJob[]; // список работ
 }
 
 export interface MkorInventory {
+  id: string;
   diameter: number;
   count: number;
   availableFrom: string; // дата поступления от завода
@@ -205,7 +214,7 @@ export function getMkorStageOnDate(mkor: MkorUnit, date: Date): {
   requiresTransport: boolean;
 } | null {
   const startDate = new Date(mkor.start);
-  const daysDiff = Math.floor((date.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+  const daysDiff = differenceInCalendarDays(date, startDate);
   
   if (daysDiff < 0) return null;
   
