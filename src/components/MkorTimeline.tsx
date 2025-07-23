@@ -106,17 +106,18 @@ const SortableMkorRow: React.FC<SortableMkorRowProps> = ({
 
   const getDayContent = (day: Date) => {
     const segments = getMkorSegments(mkor);
-    const dayTime = day.getTime();
-    
+    // Сравниваем только yyyy-mm-dd (обнуляем часы)
+    const dayDate = new Date(day);
+    dayDate.setHours(0,0,0,0);
     for (const segment of segments) {
-      const startTime = segment.start.getTime();
-      const endTime = segment.end.getTime();
-      
-      if (dayTime >= startTime && dayTime <= endTime) {
-        const dayPosition = differenceInDays(day, segment.start);
+      const startDate = new Date(segment.start);
+      startDate.setHours(0,0,0,0);
+      const endDate = new Date(segment.end);
+      endDate.setHours(0,0,0,0);
+      if (dayDate >= startDate && dayDate <= endDate) {
+        const dayPosition = differenceInDays(dayDate, startDate);
         const isFirst = dayPosition === 0;
         const isLast = dayPosition === segment.duration - 1;
-        
         return {
           stage: segment.stage,
           color: STAGE_DISPLAY_COLORS[segment.stage],
@@ -129,7 +130,6 @@ const SortableMkorRow: React.FC<SortableMkorRowProps> = ({
         };
       }
     }
-    
     return null;
   };
 
@@ -149,7 +149,7 @@ const SortableMkorRow: React.FC<SortableMkorRowProps> = ({
       style={style}
       className={`flex border-b border-border last:border-b-0 ${isDragging ? 'opacity-50' : ''} ${!isAvailable ? 'opacity-60' : ''}`}
     >
-      <div className="w-40 p-3 bg-secondary/30 font-medium text-foreground sticky left-0 z-10 flex items-center gap-2">
+      <div className="w-48 p-3 bg-secondary/30 font-medium text-foreground sticky left-0 z-10 flex items-center gap-2" style={{minWidth: '12rem', maxWidth: '14rem'}}>
         <button
           {...attributes}
           {...listeners}
@@ -158,7 +158,7 @@ const SortableMkorRow: React.FC<SortableMkorRowProps> = ({
           <GripVertical className="w-4 h-4" />
         </button>
         <div className="flex-1">
-          <div className="text-sm flex items-center gap-1">
+          <div className="text-sm flex items-center gap-1 text-foreground font-medium">
             {mkor.name}
             {!isAvailable && (
               <AlertTriangle className="w-3 h-3 text-warning" />

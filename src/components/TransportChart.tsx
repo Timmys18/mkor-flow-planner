@@ -37,7 +37,12 @@ export const TransportChart: React.FC<TransportChartProps> = ({
           const jobStart = new Date(job.start);
           jobStart.setHours(0,0,0,0);
           // Для расчета этапов временно подменяем start на job.start
-          const mkorForJob = { ...mkor, start: job.start };
+          // Округляем длительности этапов вверх
+          const mkorForJob = {
+            ...mkor,
+            start: job.start,
+            segments: mkor.segments.map(s => Math.ceil(s))
+          };
           const stageInfo = getMkorStageOnDate(mkorForJob, day);
           if (stageInfo && stageInfo.requiresTransport) {
             const specs = MKOR_SPECS[mkor.diameter];

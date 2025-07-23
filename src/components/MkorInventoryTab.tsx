@@ -63,12 +63,12 @@ export const MkorInventoryTab: React.FC<MkorInventoryTabProps> = ({
       });
       // 2. Добавить в mkorUnit (по количеству newCount)
       const segments = [
-        MKOR_SPECS[newDiameter].transitToObject,
-        MKOR_SPECS[newDiameter].unloadingTime,
-        MKOR_SPECS[newDiameter].workingPeriod,
-        MKOR_SPECS[newDiameter].loadingTime,
-        MKOR_SPECS[newDiameter].transitToMaintenance,
-        MKOR_SPECS[newDiameter].maintenanceTime
+        Math.ceil(MKOR_SPECS[newDiameter].transitToObject),
+        Math.ceil(MKOR_SPECS[newDiameter].unloadingTime),
+        Math.ceil(MKOR_SPECS[newDiameter].workingPeriod),
+        Math.ceil(MKOR_SPECS[newDiameter].loadingTime),
+        Math.ceil(MKOR_SPECS[newDiameter].transitToMaintenance),
+        Math.ceil(MKOR_SPECS[newDiameter].maintenanceTime)
       ];
       for (let i = 0; i < newCount; i++) {
         const suffix = i === 0 ? '' : `-${i + 1}`;
@@ -106,9 +106,7 @@ export const MkorInventoryTab: React.FC<MkorInventoryTabProps> = ({
   };
 
   const getTotalByDiameter = (diameter: number) => {
-    return inventory
-      .filter(item => item.diameter === diameter)
-      .reduce((sum, item) => sum + item.count, 0);
+    return mkorUnits.filter(unit => unit.diameter === diameter).length;
   };
 
   const sortedInventory = [...inventory].sort((a, b) => {
