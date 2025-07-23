@@ -14,7 +14,7 @@ interface MkorInventoryTabProps {
   inventory: MkorInventory[];
   onInventoryChange: (inv: MkorInventory[]) => void;
   mkorUnits: import('@/types/mkor').MkorUnit[];
-  onMkorUnitsChange: (units: import('@/types/mkor').MkorUnit[]) => void;
+  onMkorUnitsChange: () => void;
 }
 
 export const MkorInventoryTab: React.FC<MkorInventoryTabProps> = ({
@@ -34,10 +34,14 @@ export const MkorInventoryTab: React.FC<MkorInventoryTabProps> = ({
 
   // Функция для обновления inventory и mkorUnits с сервера
   const refreshData = async () => {
-    const inv = await fetch('http://localhost:4000/api/inventory').then(res => res.json());
-    onInventoryChange(inv);
-    const units = await fetch('http://localhost:4000/api/mkor').then(res => res.json());
-    onMkorUnitsChange(units);
+    try {
+      const inv = await fetch('/api/inventory').then(res => res.json());
+      onInventoryChange(inv);
+      await fetch('/api/mkor');
+      onMkorUnitsChange();
+    } catch (error) {
+      console.error('Ошибка при обновлении данных:', error);
+    }
   };
 
   useEffect(() => {
@@ -46,17 +50,44 @@ export const MkorInventoryTab: React.FC<MkorInventoryTabProps> = ({
 
   // Добавление поступления МКОР через API
   const handleAddInventory = async () => {
-    await fetch('http://localhost:4000/api/inventory', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        diameter: newDiameter,
-        count: newCount,
-        availableFrom: newDate
-      })
-    });
-    setNewCount(1);
-    refreshData();
+    try {
+      // 1. Добавить в inventory
+      await fetch('/api/inventory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          diameter: newDiameter,
+          count: newCount,
+          availableFrom: newDate
+        })
+      });
+      // 2. Добавить в mkorUnit (по количеству newCount)
+      const segments = [
+        MKOR_SPECS[newDiameter].transitToObject,
+        MKOR_SPECS[newDiameter].unloadingTime,
+        MKOR_SPECS[newDiameter].workingPeriod,
+        MKOR_SPECS[newDiameter].loadingTime,
+        MKOR_SPECS[newDiameter].transitToMaintenance,
+        MKOR_SPECS[newDiameter].maintenanceTime
+      ];
+      for (let i = 0; i < newCount; i++) {
+        const suffix = i === 0 ? '' : `-${i + 1}`;
+        await fetch('/api/mkor', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: `DN-${newDiameter}${suffix}`,
+            diameter: newDiameter,
+            availableFrom: newDate,
+            segments
+          })
+        });
+      }
+      setNewCount(1);
+      await refreshData();
+    } catch (error) {
+      console.error('Ошибка при добавлении инвентаря:', error);
+    }
   };
 
   const handleRemoveInventory = (index: number) => {
@@ -69,7 +100,6 @@ export const MkorInventoryTab: React.FC<MkorInventoryTabProps> = ({
       handleRemoveInventory(index);
       return;
     }
-
     const newInventory = [...inventory];
     newInventory[index] = { ...newInventory[index], count: newCount };
     onInventoryChange(newInventory);
@@ -86,20 +116,10 @@ export const MkorInventoryTab: React.FC<MkorInventoryTabProps> = ({
     return new Date(a.availableFrom).getTime() - new Date(b.availableFrom).getTime();
   });
 
-  // Собираем список всех МКОР поштучно (каждая единица — отдельная строка)
-  const allUnits: { name: string; diameter: number; availableFrom: string }[] = [];
-  inventory.forEach(item => {
-    for (let i = 0; i < item.count; i++) {
-      const suffix = i === 0 ? '' : `-${i + 1}`;
-      allUnits.push({
-        name: `DN-${item.diameter}${suffix}`,
-        diameter: item.diameter,
-        availableFrom: item.availableFrom
-      });
-    }
-  });
+  // Используем только реальные МКОР из базы
+  const allUnits = mkorUnits;
 
-  // Проверка: дата не раньше поставки и не пересекается с другими работами (заглушка, если появится jobs)
+  // Проверка: дата не раньше поставки и не пересекается с другими работами
   const canPlanJob = (unit: typeof allUnits[number], date: string) => {
     if (!date) return false;
     if (date < unit.availableFrom) return false;
@@ -107,75 +127,110 @@ export const MkorInventoryTab: React.FC<MkorInventoryTabProps> = ({
     return true;
   };
 
-  // Планирование работы через API
+  // Планирование работы через API (ИСПРАВЛЕННАЯ ВЕРСИЯ)
   const handlePlanJob = async () => {
     if (planDialogIdx === null) return;
+
     const unit = allUnits[planDialogIdx];
+
     if (!canPlanJob(unit, planDate)) {
       setPlanError('Нельзя назначить работу на выбранную дату');
       return;
     }
-    // Найти нужный МКОР по имени и дате поставки
-    const mkor = mkorUnits.find(u => u.name === unit.name && u.availableFrom === unit.availableFrom);
-    if (mkor) {
-      await fetch(`http://localhost:4000/api/mkor/${mkor.id}/job`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ start: planDate })
-      });
-    } else {
-      // Если такого МКОР нет — создать новый
-      const number = mkorUnits.filter(u => u.diameter === unit.diameter).length + 1;
-      const res = await fetch('http://localhost:4000/api/mkor', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: unit.name,
-          diameter: unit.diameter,
-          availableFrom: unit.availableFrom,
-          segments: [3,1,13,1,3,3] // TODO: брать реальные сегменты
-        })
-      });
-      const newUnit = await res.json();
-      await fetch(`http://localhost:4000/api/mkor/${newUnit.id}/job`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ start: planDate })
-      });
+
+    try {
+      // Найти нужный МКОР по имени и дате поставки
+      let mkor = mkorUnits.find(u => u.name === unit.name && u.availableFrom === unit.availableFrom);
+
+      if (mkor) {
+        // МКОР уже существует, просто добавляем работу
+        await fetch(`/api/mkor/${mkor.id}/job`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ start: planDate })
+        });
+      } else {
+        // МКОР не существует — создать новый и добавить работу
+        console.log('Создаем новый МКОР:', unit.name);
+        
+        const createResponse = await fetch('/api/mkor', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: unit.name,
+            diameter: unit.diameter,
+            availableFrom: unit.availableFrom,
+            segments: [3, 1, 13, 1, 3, 3] // TODO: брать реальные сегменты из MKOR_SPECS
+          })
+        });
+
+        if (!createResponse.ok) {
+          throw new Error(`Ошибка создания МКОР: ${createResponse.status}`);
+        }
+
+        const newUnit = await createResponse.json();
+        console.log('Новый МКОР создан с ID:', newUnit.id);
+
+        // Теперь добавляем работу к новому МКОР
+        const jobResponse = await fetch(`/api/mkor/${newUnit.id}/job`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ start: planDate })
+        });
+
+        if (!jobResponse.ok) {
+          throw new Error(`Ошибка добавления работы: ${jobResponse.status}`);
+        }
+
+        console.log('Работа добавлена к МКОР');
+      }
+
+      // Закрываем диалог и обновляем данные
+      setPlanDialogIdx(null);
+      setPlanDate('');
+      setPlanError('');
+      await refreshData();
+
+    } catch (error) {
+      console.error('Ошибка при планировании работы:', error);
+      setPlanError('Ошибка при планировании работы. Попробуйте еще раз.');
     }
-    setPlanDialogIdx(null);
-    setPlanDate('');
-    setPlanError('');
-    await refreshData();
   };
 
   // Удаление конкретной единицы МКОР через API
   const handleRemoveUnit = async (unit: { name: string; diameter: number; availableFrom: string }) => {
-    // Удаляем из inventory (находим по diameter и availableFrom)
-    const inv = inventory.find(item => item.diameter === unit.diameter && item.availableFrom === unit.availableFrom);
-    if (inv) {
-      // Если count > 1, уменьшаем, иначе удаляем
-      if (inv.count > 1) {
-        await fetch(`http://localhost:4000/api/inventory/${inv.id}`, { method: 'DELETE' });
-        await fetch('http://localhost:4000/api/inventory', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            diameter: inv.diameter,
-            count: inv.count - 1,
-            availableFrom: inv.availableFrom
-          })
-        });
-      } else {
-        await fetch(`http://localhost:4000/api/inventory/${inv.id}`, { method: 'DELETE' });
+    try {
+      // Удаляем из inventory (находим по diameter и availableFrom)
+      const inv = inventory.find(item => item.diameter === unit.diameter && item.availableFrom === unit.availableFrom);
+      
+      if (inv && inv.id) {
+        // Если count > 1, уменьшаем, иначе удаляем
+        if (inv.count > 1) {
+          await fetch(`/api/inventory/${inv.id}`, { method: 'DELETE' });
+          await fetch('/api/inventory', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              diameter: inv.diameter,
+              count: inv.count - 1,
+              availableFrom: inv.availableFrom
+            })
+          });
+        } else {
+          await fetch(`/api/inventory/${inv.id}`, { method: 'DELETE' });
+        }
       }
+
+      // Удаляем из mkorUnits (по id)
+      const mkor = mkorUnits.find(u => u.name === unit.name && u.availableFrom === unit.availableFrom);
+      if (mkor && mkor.id) {
+        await fetch(`/api/mkor/${mkor.id}`, { method: 'DELETE' });
+      }
+
+      refreshData();
+    } catch (error) {
+      console.error('Ошибка при удалении единицы:', error);
     }
-    // Удаляем из mkorUnits (по id)
-    const mkor = mkorUnits.find(u => u.name === unit.name && u.availableFrom === unit.availableFrom);
-    if (mkor) {
-      await fetch(`http://localhost:4000/api/mkor/${mkor.id}`, { method: 'DELETE' });
-    }
-    refreshData();
   };
 
   return (
@@ -186,21 +241,37 @@ export const MkorInventoryTab: React.FC<MkorInventoryTabProps> = ({
         <div className="flex gap-4 items-end mb-4">
           <div>
             <span className="text-foreground font-medium">Диаметр</span>
-            <select value={newDiameter} onChange={e => setNewDiameter(Number(e.target.value))} className="block w-32 mt-2 bg-secondary border-border text-foreground rounded px-2 py-1">
+            <select 
+              value={newDiameter} 
+              onChange={e => setNewDiameter(Number(e.target.value))} 
+              className="block w-32 mt-2 bg-secondary border-border text-foreground rounded px-2 py-1"
+            >
               {availableDiameters.map(d => <option key={d} value={d}>DN-{d}</option>)}
             </select>
           </div>
           <div>
             <span className="text-foreground font-medium">Количество</span>
-            <Input type="number" min={1} value={newCount} onChange={e => setNewCount(Number(e.target.value))} className="w-24 mt-2 bg-secondary border-border text-foreground" />
+            <Input 
+              type="number" 
+              min={1} 
+              value={newCount} 
+              onChange={e => setNewCount(Number(e.target.value))}
+              className="w-24 mt-2 bg-secondary border-border text-foreground" 
+            />
           </div>
           <div>
             <span className="text-foreground font-medium">Дата поступления</span>
-            <Input type="date" value={newDate} onChange={e => setNewDate(e.target.value)} className="w-40 mt-2 bg-secondary border-border text-foreground" />
+            <Input 
+              type="date" 
+              value={newDate} 
+              onChange={e => setNewDate(e.target.value)} 
+              className="w-40 mt-2 bg-secondary border-border text-foreground" 
+            />
           </div>
           <Button className="bg-primary text-white px-4 py-2" onClick={handleAddInventory}>+ Добавить</Button>
         </div>
       </div>
+
       {/* Основная таблица 'Парк МКОР' */}
       <div className="mb-8">
         <h2 className="text-lg font-bold mb-4 text-foreground">Парк МКОР</h2>
@@ -216,17 +287,28 @@ export const MkorInventoryTab: React.FC<MkorInventoryTabProps> = ({
             </thead>
             <tbody>
               {allUnits.map((unit, idx) => {
-                // Найти работу для этого МКОР
-                const mkor = mkorUnits.find(u => u.name === unit.name && u.availableFrom === unit.availableFrom);
-                const jobDate = mkor && mkor.jobs && mkor.jobs.length > 0 ? mkor.jobs[0].start : '';
+                const jobDates = unit.jobs && unit.jobs.length > 0 ? unit.jobs.map(j => j.start) : [];
+
                 return (
                   <tr key={unit.name + unit.availableFrom} className="bg-card border-b border-border">
                     <td className="px-4 py-2 font-semibold text-foreground">{unit.name}</td>
                     <td className="px-4 py-2 text-muted-foreground">{format(new Date(unit.availableFrom), 'dd.MM.yyyy')}</td>
-                    <td className="px-4 py-2 text-muted-foreground">{jobDate ? format(new Date(jobDate), 'dd.MM.yyyy') : '-'}</td>
+                    <td className="px-4 py-2 text-muted-foreground">
+                      {jobDates.length > 0 ? jobDates.map(d => format(new Date(d), 'dd.MM.yyyy')).join(', ') : '-'}
+                    </td>
                     <td className="px-4 py-2">
-                      <Button className="px-3 py-1 rounded bg-primary text-white hover:bg-primary/80 transition" onClick={() => { setPlanDialogIdx(idx); setPlanDate(''); setPlanError(''); }}>Запланировать работу</Button>
-                      <Button className="ml-2 px-3 py-1 rounded bg-destructive text-white hover:bg-destructive/80 transition" onClick={() => handleRemoveUnit(unit)}><Trash2 className="w-4 h-4" /></Button>
+                      <Button 
+                        className="px-3 py-1 rounded bg-primary text-white hover:bg-primary/80 transition" 
+                        onClick={() => { setPlanDialogIdx(idx); setPlanDate(''); setPlanError(''); }}
+                      >
+                        Запланировать работу
+                      </Button>
+                      <Button 
+                        className="ml-2 px-3 py-1 rounded bg-destructive text-white hover:bg-destructive/80 transition"
+                        onClick={() => handleRemoveUnit(unit)}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
                     </td>
                   </tr>
                 );
@@ -234,6 +316,7 @@ export const MkorInventoryTab: React.FC<MkorInventoryTabProps> = ({
             </tbody>
           </table>
         </div>
+
         {/* Модальное окно планирования работы */}
         <Dialog open={planDialogIdx !== null} onOpenChange={open => { if (!open) setPlanDialogIdx(null); }}>
           <DialogContent className="bg-card border-border max-w-md">
@@ -243,7 +326,13 @@ export const MkorInventoryTab: React.FC<MkorInventoryTabProps> = ({
             <div className="space-y-4">
               <div>
                 <span className="text-foreground font-medium">Дата начала работы</span>
-                <Input type="date" min={planDialogIdx !== null ? allUnits[planDialogIdx].availableFrom : undefined} value={planDate} onChange={e => setPlanDate(e.target.value)} className="mt-2 bg-secondary border-border text-foreground" />
+                <Input 
+                  type="date" 
+                  min={planDialogIdx !== null ? allUnits[planDialogIdx].availableFrom : undefined} 
+                  value={planDate} 
+                  onChange={e => setPlanDate(e.target.value)} 
+                  className="mt-2 bg-secondary border-border text-foreground" 
+                />
               </div>
               {planError && <div className="text-destructive text-xs mt-1">{planError}</div>}
               <Button className="bg-primary text-white px-3 py-1" onClick={handlePlanJob}>Принять в работу</Button>

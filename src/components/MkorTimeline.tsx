@@ -182,6 +182,10 @@ const SortableMkorRow: React.FC<SortableMkorRowProps> = ({
             </button>
           }
         />
+        <button
+          className="ml-2 px-2 py-1 rounded bg-destructive text-white hover:bg-destructive/80 transition text-xs"
+          onClick={() => onMkorDelete(mkor.id)}
+        >Удалить</button>
       </div>
       
       {days.map((day, dayIndex) => {
@@ -352,7 +356,7 @@ export const MkorTimeline: React.FC<MkorTimelineProps> = ({
             Временная шкала МКОР
           </h2>
           <div className="text-sm text-muted-foreground ml-auto">
-            Перетаскивайте для изменения порядка и времени
+            Перетащите для изменения порядка и времени
           </div>
         </div>
         

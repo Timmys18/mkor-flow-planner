@@ -65,8 +65,8 @@ const Index = () => {
   };
 
   // Обновление МКОР (например, после редактирования или удаления работы)
-  const handleMkorUnitsChange = async () => {
-    await fetchMkorUnits();
+  const handleMkorUnitsChange = () => {
+    fetchMkorUnits();
   };
 
   return (
