@@ -125,70 +125,98 @@ export const MkorInventoryTab: React.FC<MkorInventoryTabProps> = ({
     return true;
   };
 
+  // Функция проверки занятости МКОР на выбранные даты
+  const isMkorAvailableForJob = (mkor, startDate, segments) => {
+    // startDate - строка yyyy-mm-dd
+    const jobStart = new Date(startDate);
+    jobStart.setHours(0,0,0,0);
+    const totalDays = segments.reduce((a, b) => a + b, 0);
+    const jobEnd = new Date(jobStart);
+    jobEnd.setDate(jobEnd.getDate() + totalDays - 1);
+    if (!mkor.jobs) return true;
+    for (const job of mkor.jobs) {
+      const existingStart = new Date(job.start);
+      existingStart.setHours(0,0,0,0);
+      const existingEnd = new Date(existingStart);
+      existingEnd.setDate(existingEnd.getDate() + segments.reduce((a, b) => a + b, 0) - 1);
+      // Пересечение интервалов
+      if (jobStart <= existingEnd && jobEnd >= existingStart) {
+        return false;
+      }
+    }
+    return true;
+  };
+
   // Планирование работы через API (ИСПРАВЛЕННАЯ ВЕРСИЯ)
   const handlePlanJob = async () => {
     if (planDialogIdx === null) return;
-
     const unit = allUnits[planDialogIdx];
-
     if (!canPlanJob(unit, planDate)) {
       setPlanError('Нельзя назначить работу на выбранную дату');
       return;
     }
-
     try {
-      // Найти нужный МКОР по имени и дате поставки
+      // Формируем сегменты для расчёта занятости
+      const segments = [
+        Math.ceil(MKOR_SPECS[unit.diameter].transitToObject),
+        Math.ceil(MKOR_SPECS[unit.diameter].unloadingTime),
+        Math.ceil(MKOR_SPECS[unit.diameter].workingPeriod),
+        Math.ceil(MKOR_SPECS[unit.diameter].loadingTime),
+        Math.ceil(MKOR_SPECS[unit.diameter].transitToMaintenance),
+        Math.ceil(MKOR_SPECS[unit.diameter].maintenanceTime)
+      ];
+      // Найти все МКОР с этим именем и датой поставки
       let mkor = mkorUnits.find(u => u.name === unit.name && u.availableFrom === unit.availableFrom);
-
       if (mkor) {
-        // МКОР уже существует, просто добавляем работу
+        // Проверить, свободен ли МКОР на выбранные даты
+        if (!isMkorAvailableForJob(mkor, planDate, segments)) {
+          setPlanError('МКОР занят на выбранные даты');
+          return;
+        }
+        // Добавить работу к существующему МКОР
         await fetch(`/api/mkor/${mkor.id}/job`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ start: planDate })
         });
       } else {
-        // МКОР не существует — создать новый и добавить работу
-        console.log('Создаем новый МКОР:', unit.name);
-        
+        // Если такого МКОР нет — создать новый с правильным именем
+        // Определить номер (суффикс)
+        const sameDiameterUnits = mkorUnits.filter(u => u.diameter === unit.diameter);
+        let number = 1;
+        let name = `DN-${unit.diameter}`;
+        while (sameDiameterUnits.some(u => u.name === name)) {
+          number++;
+          name = `DN-${unit.diameter} (${number})`;
+        }
         const createResponse = await fetch('/api/mkor', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            name: unit.name,
+            name,
             diameter: unit.diameter,
             availableFrom: unit.availableFrom,
-            segments: [3, 1, 13, 1, 3, 3] // TODO: брать реальные сегменты из MKOR_SPECS
+            segments
           })
         });
-
         if (!createResponse.ok) {
           throw new Error(`Ошибка создания МКОР: ${createResponse.status}`);
         }
-
         const newUnit = await createResponse.json();
-        console.log('Новый МКОР создан с ID:', newUnit.id);
-
-        // Теперь добавляем работу к новому МКОР
+        // Добавить работу к новому МКОР
         const jobResponse = await fetch(`/api/mkor/${newUnit.id}/job`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ start: planDate })
         });
-
         if (!jobResponse.ok) {
           throw new Error(`Ошибка добавления работы: ${jobResponse.status}`);
         }
-
-        console.log('Работа добавлена к МКОР');
       }
-
-      // Закрываем диалог и обновляем данные
       setPlanDialogIdx(null);
       setPlanDate('');
       setPlanError('');
       await refreshData();
-
     } catch (error) {
       console.error('Ошибка при планировании работы:', error);
       setPlanError('Ошибка при планировании работы. Попробуйте еще раз.');

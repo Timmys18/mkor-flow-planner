@@ -82,13 +82,22 @@ const SortableMkorRow: React.FC<SortableMkorRowProps> = ({
     transition,
   };
 
-  const getMkorSegments = (mkor: MkorUnit) => {
+  const getMkorSegments = (mkor: MkorUnit, startDate: string) => {
+    // Защита: если mkor.segments не массив — попытаться распарсить, иначе []
+    let segArr = mkor.segments;
+    if (!Array.isArray(segArr)) {
+      try {
+        segArr = JSON.parse(segArr);
+      } catch {
+        segArr = [];
+      }
+    }
+    if (!Array.isArray(segArr)) segArr = [];
     const segments = [];
-    let currentDate = parseISO(mkor.start);
+    let currentDate = parseISO(startDate);
     const stages = ['transitToObject', 'unloading', 'working', 'loading', 'transitToMaintenance', 'maintenance'] as const;
-    
     stages.forEach((stage, index) => {
-      const duration = mkor.segments[index];
+      const duration = segArr[index];
       if (duration > 0) {
         segments.push({
           stage,
@@ -100,12 +109,11 @@ const SortableMkorRow: React.FC<SortableMkorRowProps> = ({
         currentDate = addDays(currentDate, duration);
       }
     });
-    
     return segments;
   };
 
   const getDayContent = (day: Date) => {
-    const segments = getMkorSegments(mkor);
+    const segments = getMkorSegments(mkor, mkor.start);
     // Сравниваем только yyyy-mm-dd (обнуляем часы)
     const dayDate = new Date(day);
     dayDate.setHours(0,0,0,0);
@@ -187,9 +195,40 @@ const SortableMkorRow: React.FC<SortableMkorRowProps> = ({
           onClick={() => onMkorDelete(mkor.id)}
         >Удалить</button>
       </div>
-      
+      {/* Для каждой работы mkor.jobs строим отдельные сегменты на одной строке */}
       {days.map((day, dayIndex) => {
-        const content = getDayContent(day);
+        let content = null;
+        if (Array.isArray(mkor.jobs)) {
+          for (const job of mkor.jobs) {
+            const segs = getMkorSegments(mkor, job.start);
+            for (const segment of segs) {
+              // Сравниваем только yyyy-mm-dd
+              const dayDate = new Date(day);
+              dayDate.setHours(0,0,0,0);
+              const startDate = new Date(segment.start);
+              startDate.setHours(0,0,0,0);
+              const endDate = new Date(segment.end);
+              endDate.setHours(0,0,0,0);
+              if (dayDate >= startDate && dayDate <= endDate) {
+                const dayPosition = differenceInDays(dayDate, startDate);
+                const isFirst = dayPosition === 0;
+                const isLast = dayPosition === segment.duration - 1;
+                content = {
+                  stage: segment.stage,
+                  color: STAGE_DISPLAY_COLORS[segment.stage],
+                  name: STAGE_DISPLAY_NAMES[segment.stage],
+                  segmentIndex: segment.index,
+                  isFirst,
+                  isLast,
+                  dayPosition,
+                  totalDuration: segment.duration,
+                };
+                break;
+              }
+            }
+            if (content) break;
+          }
+        }
         return (
           <div 
             key={day.toISOString()} 
@@ -216,7 +255,6 @@ const SortableMkorRow: React.FC<SortableMkorRowProps> = ({
                 {content.isLast && (
                   <div className="absolute top-1 right-1 w-2 h-2 bg-white/30 rounded-full"></div>
                 )}
-                
                 {/* Resize handle */}
                 {content.isLast && (
                   <div 
@@ -225,23 +263,19 @@ const SortableMkorRow: React.FC<SortableMkorRowProps> = ({
                       e.preventDefault();
                       const startX = e.clientX;
                       const startDuration = content.totalDuration;
-                      
                       const handleMouseMove = (e: MouseEvent) => {
                         const deltaX = e.clientX - startX;
                         const dayWidth = 96; // w-24 = 96px
                         const deltaDays = Math.round(deltaX / dayWidth);
                         const newDuration = Math.max(1, startDuration + deltaDays);
-                        
                         if (newDuration !== startDuration) {
                           onSegmentDrag(mkor.id, content.segmentIndex, newDuration);
                         }
                       };
-                      
                       const handleMouseUp = () => {
                         document.removeEventListener('mousemove', handleMouseMove);
                         document.removeEventListener('mouseup', handleMouseUp);
                       };
-                      
                       document.addEventListener('mousemove', handleMouseMove);
                       document.addEventListener('mouseup', handleMouseUp);
                     }}
@@ -329,18 +363,9 @@ export const MkorTimeline: React.FC<MkorTimelineProps> = ({
     onMkorUnitsChange(newUnits);
   };
 
-  // Фильтруем только МКОР с работами
+  // Для каждого МКОР с работами — одна строка, все работы отображаются на одной шкале
   const mkorWithJobs = mkorUnits.filter(unit => Array.isArray(unit.jobs) && unit.jobs.length > 0);
-
-  // Для каждого МКОР и каждой работы строим отдельный блок
-  const expandedUnits = mkorWithJobs.flatMap(unit =>
-    (unit.jobs || []).map((job, idx) => ({
-      ...unit,
-      start: job.start,
-      jobIndex: idx,
-      name: unit.jobs && unit.jobs.length > 1 ? `${unit.name} (${idx + 1})` : unit.name
-    }))
-  );
+  const expandedUnits = mkorWithJobs;
 
   // Удаляю условие возврата пустого div. Всегда рендерю основной layout.
   // if (expandedUnits.length === 0) {
@@ -386,10 +411,10 @@ export const MkorTimeline: React.FC<MkorTimelineProps> = ({
               onDragStart={handleDragStart}
               onDragEnd={handleDragEnd}
             >
-              <SortableContext items={expandedUnits.map(unit => unit.id + '-' + unit.start)} strategy={verticalListSortingStrategy}>
+              <SortableContext items={expandedUnits.map(unit => unit.id)} strategy={verticalListSortingStrategy}>
                 {expandedUnits.length > 0 && expandedUnits.map((mkor) => (
                   <SortableMkorRow
-                    key={mkor.id + '-' + mkor.start}
+                    key={mkor.id}
                     mkor={mkor}
                     days={days}
                     onSegmentDrag={handleSegmentDrag}
