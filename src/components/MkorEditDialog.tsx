@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -7,12 +7,12 @@ import { Card } from '@/components/ui/card';
 import { Edit, Trash2, Calendar, Settings } from 'lucide-react';
 import { format } from 'date-fns';
 import { Calendar as CalendarIcon } from 'lucide-react';
-import { MkorUnit, MkorJob } from '../types/mkor';
+import { MkorUnit, MkorJob, MKOR_SPECS, STAGE_NAMES } from '../types/mkor';
 
 interface MkorEditDialogProps {
   mkor: MkorUnit;
-  onSave: (updatedMkor: MkorUnit) => void;
-  onDelete: (mkorId: string) => void;
+  onSave?: (updatedMkor?: MkorUnit) => void;
+  onDelete: (id: string) => void;
   trigger: React.ReactNode;
 }
 
@@ -26,6 +26,8 @@ export const MkorEditDialog: React.FC<MkorEditDialogProps> = ({
   const [editedMkor, setEditedMkor] = useState<MkorUnit>(mkor);
   const [newJobDate, setNewJobDate] = useState('');
   const [jobError, setJobError] = useState('');
+  const [customSegments, setCustomSegments] = useState<number[]>([]);
+  const [stagesError, setStagesError] = useState('');
 
   // Проверка: дата не раньше поставки и не пересекается с существующими работами
   const canAddJob = (date: string) => {
@@ -44,23 +46,127 @@ export const MkorEditDialog: React.FC<MkorEditDialogProps> = ({
     return true;
   };
 
-  const handleAddJob = () => {
+  const handleAddJob = async () => {
     if (!canAddJob(newJobDate)) {
       setJobError('Нельзя назначить работу на выбранную дату');
       return;
     }
-    const newJobs = [...(editedMkor.jobs || []), { start: newJobDate }];
-    setEditedMkor({ ...editedMkor, jobs: newJobs });
-    setNewJobDate('');
-    setJobError('');
+    try {
+      await fetch(`/api/mkor/${mkor.id}/job`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ start: newJobDate })
+      });
+      setNewJobDate('');
+      setJobError('');
+      if (onSave) onSave();
+    } catch (error) {
+      setJobError('Ошибка при добавлении работы');
+    }
   };
 
-  const handleDeleteJob = (idx: number) => {
-    const newJobs = (editedMkor.jobs || []).filter((_, i) => i !== idx);
-    setEditedMkor({ ...editedMkor, jobs: newJobs });
+  const handleDeleteJob = async (idx: number) => {
+    try {
+      const job = (mkor.jobs || [])[idx];
+      const jobId = job && (job.id || job['id']);
+      if (jobId) {
+        await fetch(`/api/job/${jobId}`, { method: 'DELETE' });
+        if (onSave) onSave();
+      }
+    } catch (error) {
+      // Можно добавить обработку ошибки
+    }
   };
 
-  const handleSave = () => {
+  // Загружаем кастомные этапы при открытии диалога
+  useEffect(() => {
+    if (isOpen && mkor.jobs && mkor.jobs.length > 0) {
+      const job = mkor.jobs[0];
+      if (job.customStages && job.customSegments) {
+        try {
+          const segments = Array.isArray(job.customSegments) 
+            ? job.customSegments 
+            : JSON.parse(job.customSegments);
+          setCustomSegments(segments);
+        } catch {
+          // Если не удалось распарсить, используем стандартные
+          const specs = MKOR_SPECS[mkor.diameter];
+          setCustomSegments([
+            specs.transitToObject, specs.unloadingTime, specs.workingPeriod,
+            specs.loadingTime, specs.transitToMaintenance, specs.maintenanceTime
+          ]);
+        }
+      } else {
+        // Используем стандартные этапы
+        const specs = MKOR_SPECS[mkor.diameter];
+        setCustomSegments([
+          specs.transitToObject, specs.unloadingTime, specs.workingPeriod,
+          specs.loadingTime, specs.transitToMaintenance, specs.maintenanceTime
+        ]);
+      }
+    }
+  }, [isOpen, mkor]);
+
+  const handleSegmentChange = (index: number, value: string) => {
+    const numValue = parseFloat(value);
+    if (isNaN(numValue) || numValue < 0) {
+      setStagesError('Значение должно быть положительным числом');
+      return;
+    }
+    const newSegments = [...customSegments];
+    newSegments[index] = numValue;
+    setCustomSegments(newSegments);
+    setStagesError('');
+  };
+
+  const handleResetToDefault = () => {
+    const specs = MKOR_SPECS[mkor.diameter];
+    setCustomSegments([
+      specs.transitToObject, specs.unloadingTime, specs.workingPeriod,
+      specs.loadingTime, specs.transitToMaintenance, specs.maintenanceTime
+    ]);
+    setStagesError('');
+  };
+
+  const handleSaveCustomStages = async () => {
+    if (!mkor.jobs || mkor.jobs.length === 0) return;
+    
+    const totalDays = customSegments.reduce((sum, segment) => sum + segment, 0);
+    if (totalDays <= 0) {
+      setStagesError('Общая продолжительность должна быть больше 0');
+      return;
+    }
+
+    try {
+      const job = mkor.jobs[0];
+      const response = await fetch(`/api/job/${job.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          start: job.start,
+          customer: job.customer,
+          lpu: job.lpu,
+          customStages: true,
+          customSegments: customSegments
+        })
+      });
+
+      if (response.ok) {
+        if (onSave) onSave();
+      } else {
+        setStagesError('Ошибка при сохранении этапов');
+      }
+    } catch (error) {
+      setStagesError('Ошибка при сохранении этапов');
+    }
+  };
+
+  const handleSave = async () => {
+    // Сначала сохраняем кастомные этапы, если есть работы
+    if (editedMkor.jobs && editedMkor.jobs.length > 0) {
+      await handleSaveCustomStages();
+    }
+    
     onSave(editedMkor);
     setIsOpen(false);
   };
@@ -70,14 +176,7 @@ export const MkorEditDialog: React.FC<MkorEditDialogProps> = ({
     setIsOpen(false);
   };
 
-  const updateSegment = (index: number, value: string) => {
-    const newSegments = [...editedMkor.segments];
-    newSegments[index] = Math.max(0, parseInt(value) || 0);
-    setEditedMkor({ ...editedMkor, segments: newSegments });
-  };
 
-  const segmentNames = ['Транзит', 'Погрузка/Разгрузка', 'Работа', 'Ремонт'];
-  const segmentColors = ['bg-transit', 'bg-loading', 'bg-working', 'bg-repair'];
 
   return (
     <Dialog open={isOpen} onOpenChange={setIsOpen}>
@@ -117,35 +216,7 @@ export const MkorEditDialog: React.FC<MkorEditDialogProps> = ({
             </div>
           </div>
 
-          {/* Сегменты */}
-          <div className="space-y-3">
-            <Label className="text-foreground font-medium">Длительность этапов (дни)</Label>
-            {segmentNames.map((name, index) => (
-              <div key={index} className="flex items-center gap-3">
-                <div className={`w-4 h-4 ${segmentColors[index]} rounded`}></div>
-                <Label className="text-sm text-foreground min-w-0 flex-1">{name}</Label>
-                <Input
-                  type="number"
-                  min="0"
-                  value={editedMkor.segments[index]}
-                  onChange={(e) => updateSegment(index, e.target.value)}
-                  className="w-20 bg-secondary border-border text-foreground"
-                />
-              </div>
-            ))}
-          </div>
 
-          {/* Информация */}
-          <Card className="bg-secondary/50 border-border p-3">
-            <div className="text-sm text-muted-foreground">
-              <div className="flex justify-between">
-                <span>Общая длительность:</span>
-                <span className="text-foreground font-medium">
-                  {editedMkor.segments.reduce((sum, segment) => sum + segment, 0)} дней
-                </span>
-              </div>
-            </div>
-          </Card>
 
           {/* Работы */}
           <div className="space-y-3">
@@ -172,6 +243,58 @@ export const MkorEditDialog: React.FC<MkorEditDialogProps> = ({
             </div>
             {jobError && <div className="text-destructive text-xs mt-1">{jobError}</div>}
           </div>
+
+          {/* Редактирование этапов работы */}
+          {editedMkor.jobs && editedMkor.jobs.length > 0 && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <Label className="text-foreground font-medium">Этапы работы</Label>
+                <Button variant="outline" size="sm" onClick={handleResetToDefault} className="text-xs">
+                  Сбросить до стандартного
+                </Button>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {Object.entries(STAGE_NAMES).map(([stageKey, stageName], index) => (
+                  <div key={stageKey} className="space-y-2">
+                    <Label htmlFor={`segment-${index}`} className="text-foreground">
+                      {stageName}
+                    </Label>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        id={`segment-${index}`}
+                        type="number"
+                        step="0.5"
+                        min="0"
+                        value={customSegments[index] || 0}
+                        onChange={(e) => handleSegmentChange(index, e.target.value)}
+                        className="flex-1"
+                        placeholder="0"
+                      />
+                      <span className="text-sm text-muted-foreground">дней</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <Card className="bg-secondary/50 border-border p-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-foreground font-medium">Общая продолжительность:</span>
+                  <span className="text-foreground font-bold">
+                    {customSegments.reduce((sum, segment) => sum + segment, 0) % 1 === 0 
+                      ? `${customSegments.reduce((sum, segment) => sum + segment, 0)} дней` 
+                      : `${customSegments.reduce((sum, segment) => sum + segment, 0).toFixed(1)} дней`}
+                  </span>
+                </div>
+              </Card>
+              {stagesError && (
+                <div className="text-destructive text-sm bg-destructive/10 p-3 rounded-lg">
+                  {stagesError}
+                </div>
+              )}
+              <Button onClick={handleSaveCustomStages} disabled={!!stagesError} className="w-full">
+                Сохранить этапы
+              </Button>
+            </div>
+          )}
 
           {/* Действия */}
           <div className="flex gap-3">

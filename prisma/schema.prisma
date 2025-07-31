@@ -22,7 +22,11 @@ model MkorUnit {
 model MkorJob {
   id        String   @id @default(cuid())
   start     DateTime
-  mkorUnit  MkorUnit @relation(fields: [mkorUnitId], references: [id])
+  customer  String?  // добавлено для заказчика
+  lpu       String?  // добавлено для ЛПУ
+  customStages Boolean @default(false) // флаг кастомных этапов
+  customSegments String? // JSON: кастомные сегменты [транзит, разгрузка, работа, погрузка, транзит на ТОИР, ТОИР]
+  mkorUnit  MkorUnit @relation(fields: [mkorUnitId], references: [id], onDelete: Cascade)
   mkorUnitId String
 }
 
@@ -31,4 +35,21 @@ model MkorInventory {
   diameter      Int
   count         Int
   availableFrom DateTime
+}
+
+model TransportSupply {
+  id        String   @id @default(cuid())
+  date      DateTime
+  tractors  Int
+  trailers  Int
+  lowLoaders Int
+}
+
+model Lpu {
+  id        String   @id @default(uuid())
+  customer  String
+  name      String
+  latitude  Float?
+  longitude Float?
+  @@unique([customer, name], name: "customer_name")
 }

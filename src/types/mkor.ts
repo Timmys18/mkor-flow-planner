@@ -6,9 +6,9 @@ export interface MkorSpecs {
   diameter: number;
   operationalCycle: number; // общий операционный цикл в днях
   transitToObject: number; // время в пути на объект
-  unloadingTime: number; // время разгрузки
+  unloadingTime: number; // время разгрузки (может быть дробным, например 1.5)
   workingPeriod: number; // период эксплуатации у заказчика
-  loadingTime: number; // время погрузки
+  loadingTime: number; // время погрузки (может быть дробным, например 1.5)
   transitToMaintenance: number; // время в пути на ТОИР
   maintenanceTime: number; // время ТОИР
   tractors: number; // количество тягачей
@@ -17,8 +17,12 @@ export interface MkorSpecs {
 }
 
 export interface MkorJob {
+  id: string;
   start: string; // дата начала работы
-  // можно добавить описание, id и т.д.
+  customer?: string; // заказчик
+  lpu?: string; // ЛПУ
+  customStages?: boolean; // флаг кастомных этапов
+  customSegments?: number[]; // кастомные сегменты [транзит, разгрузка, работа, погрузка, транзит на ТОИР, ТОИР]
 }
 
 export interface MkorUnit {
@@ -36,6 +40,22 @@ export interface MkorInventory {
   diameter: number;
   count: number;
   availableFrom: string; // дата поступления от завода
+}
+
+export interface FleetSupply {
+  id: string; // уникальный идентификатор
+  date: string; // дата поставки (yyyy-MM-dd)
+  tractors: number;
+  trailers: number;
+  lowLoaders: number;
+}
+
+export interface TransportSupply {
+  id: string;
+  date: string;
+  tractors: number;
+  trailers: number;
+  lowLoaders: number;
 }
 
 // Справочник технических характеристик МКОР
@@ -194,9 +214,9 @@ export function createMkorUnit(diameter: number, startDate: string, availableFro
     availableFrom,
     segments: [
       specs.transitToObject,
-      Math.ceil(specs.unloadingTime),
+      specs.unloadingTime,
       specs.workingPeriod,
-      Math.ceil(specs.loadingTime),
+      specs.loadingTime,
       specs.transitToMaintenance,
       specs.maintenanceTime
     ]
@@ -205,18 +225,47 @@ export function createMkorUnit(diameter: number, startDate: string, availableFro
 
 // Функция для проверки доступности МКОР на дату
 export function isMkorAvailable(mkor: MkorUnit, date: string): boolean {
+  // Доступен, если поступил на склад (availableFrom <= date)
   return new Date(date) >= new Date(mkor.availableFrom);
 }
 
+// Функция для получения сегментов работы (стандартные или кастомные)
+export function getJobSegments(mkor: MkorUnit, job: MkorJob): number[] {
+  if (job.customStages && job.customSegments) {
+    try {
+      return Array.isArray(job.customSegments) 
+        ? job.customSegments 
+        : JSON.parse(job.customSegments);
+    } catch {
+      // Если не удалось распарсить, возвращаем стандартные
+    }
+  }
+  
+  // Возвращаем стандартные сегменты из МКОР
+  let segArr = mkor.segments;
+  if (!Array.isArray(segArr)) {
+    try {
+      segArr = JSON.parse(segArr);
+    } catch {
+      segArr = [];
+    }
+  }
+  return Array.isArray(segArr) ? segArr : [];
+}
+
 // Функция для определения этапа МКОР на конкретную дату
-export function getMkorStageOnDate(mkor: MkorUnit, date: Date): {
+export function getMkorStageOnDate(mkor: MkorUnit, date: Date, job?: MkorJob): {
   stage: keyof typeof STAGE_NAMES;
   requiresTransport: boolean;
+  progress?: number; // прогресс в рамках дня (0-1) для дробных этапов
 } | null {
   const startDate = new Date(mkor.start);
   const daysDiff = differenceInCalendarDays(date, startDate);
   
   if (daysDiff < 0) return null;
+  
+  // Используем сегменты работы или стандартные сегменты МКОР
+  const segments = job ? getJobSegments(mkor, job) : mkor.segments;
   
   let currentDay = 0;
   const stages: (keyof typeof STAGE_NAMES)[] = [
@@ -224,11 +273,16 @@ export function getMkorStageOnDate(mkor: MkorUnit, date: Date): {
   ];
   
   for (let i = 0; i < stages.length; i++) {
-    const segmentDuration = mkor.segments[i];
+    const segmentDuration = segments[i] || 0;
     if (daysDiff >= currentDay && daysDiff < currentDay + segmentDuration) {
       const stage = stages[i];
       const requiresTransport = ['transitToObject', 'unloading', 'loading', 'transitToMaintenance'].includes(stage);
-      return { stage, requiresTransport };
+      
+      // Вычисляем прогресс в рамках дня для дробных этапов
+      const dayProgress = daysDiff - currentDay;
+      const progress = dayProgress < 1 ? dayProgress : undefined;
+      
+      return { stage, requiresTransport, progress };
     }
     currentDay += segmentDuration;
   }
