@@ -1,16 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Calendar, BarChart3, Truck, Wrench, Route, FileText, Users } from 'lucide-react';
-import { format, eachMonthOfInterval, parseISO, startOfMonth, endOfMonth, eachDayOfInterval } from 'date-fns';
+import { Calendar, BarChart3, Truck, Wrench, Route, FileText } from 'lucide-react';
+import { format, parseISO, addDays } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 import { Calendar as CalendarComponent } from '@/components/ui/calendar';
 import { cn } from '@/lib/utils';
 import { MkorUnit, MKOR_SPECS, getJobSegments } from '@/types/mkor';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from 'recharts';
+import { ResponsiveContainer } from 'recharts';
 import { MkorTimeline } from '@/components/MkorTimeline';
+import { UtilizationAndRentalCharts } from '@/components/UtilizationChart';
+import DistanceCalculator from '@/components/DistanceCalculator';
 
 interface ReportsProps {
   startDate: string;
@@ -141,6 +143,7 @@ const DateRangePicker: React.FC<{
 const getMkorSegmentsWithDates = (mkor: MkorUnit, startDate: string) => {
   if (!mkor.jobs || mkor.jobs.length === 0) return [];
   
+  // Берем первую работу для расчета сегментов
   const job = mkor.jobs[0];
   const segments = getJobSegments(mkor, job);
   
@@ -151,8 +154,9 @@ const getMkorSegmentsWithDates = (mkor: MkorUnit, startDate: string) => {
   stages.forEach((stage, index) => {
     const duration = segments[index] || 0;
     if (duration > 0) {
-      const durationMs = duration * 24 * 60 * 60 * 1000;
-      const endDate = new Date(currentDate.getTime() + durationMs);
+      const endDate = addDays(currentDate, duration - 1);
+      endDate.setHours(23, 59, 59, 999);
+      
       result.push({
         stage,
         start: new Date(currentDate),
@@ -160,7 +164,9 @@ const getMkorSegmentsWithDates = (mkor: MkorUnit, startDate: string) => {
         duration,
         index,
       });
-      currentDate = endDate;
+      
+      currentDate = addDays(endDate, 1);
+      currentDate.setHours(0, 0, 0, 0);
     }
   });
   return result;
@@ -210,12 +216,13 @@ const WorkTimeline: React.FC<{
 }> = ({ mkorUnits, startDate, endDate }) => {
   return (
     <div className="w-full border rounded-lg overflow-hidden bg-background">
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto h-96">
         <MkorTimeline 
           mkorUnits={mkorUnits}
           startDate={startDate}
           endDate={endDate}
           onMkorUnitsChange={() => {}}
+          mode="full"
         />
       </div>
     </div>
@@ -232,45 +239,67 @@ const RentalTimeline: React.FC<{
   const mkorsWithWork = mkorUnits.filter(mkor => {
     if (!mkor.jobs || mkor.jobs.length === 0) return false;
     
-    const job = mkor.jobs[0];
-    const segments = getJobSegments(mkor, job);
+    // Проверяем все работы МКОР
+    for (const job of mkor.jobs) {
+      const segments = getJobSegments(mkor, job);
+      
+      // Проверяем, есть ли этап "работа у заказчика" (индекс 2)
+      if (segments[2] && segments[2] > 0) {
+        return true;
+      }
+    }
     
-    // Проверяем, есть ли этап "работа у заказчика" (индекс 2)
-    return segments[2] && segments[2] > 0;
+    return false;
   });
 
   // Создаём МКОР с правильными сегментами для аренды
+  // Один МКОР = одна строка, все аренды на одной временной шкале
   const rentalMkors = mkorsWithWork.map(mkor => {
-    const job = mkor.jobs![0];
-    const originalSegments = getJobSegments(mkor, job);
-    const stages = ['transitToObject', 'unloading', 'working', 'loading', 'transitToMaintenance', 'maintenance'];
+    console.log(`=== Processing MKOR ${mkor.name} for rental ===`);
+    console.log('Jobs count:', mkor.jobs?.length || 0);
+    mkor.jobs?.forEach((job, index) => {
+      console.log(`Job ${index + 1}:`, {
+        customer: job.customer,
+        start: job.start,
+        lpu: job.lpu
+      });
+    });
     
-    // Находим даты начала этапов аренды
-    const allSegments = getMkorSegmentsWithDates(mkor, job.start);
-    const rentalSegments = allSegments.filter(segment => 
-      ['unloading', 'working', 'loading'].includes(segment.stage)
-    );
+    // Собираем все сегменты аренды со всех работ этого МКОР
+    const allRentalSegments = [];
     
-    if (rentalSegments.length === 0) {
+    for (const job of mkor.jobs!) {
+      const allSegments = getMkorSegmentsWithDates(mkor, job.start);
+      const rentalSegments = allSegments.filter(segment => 
+        ['unloading', 'working', 'loading'].includes(segment.stage)
+      );
+      
+      console.log(`Rental segments for job ${job.start}:`, rentalSegments.length);
+      allRentalSegments.push(...rentalSegments);
+    }
+    
+    console.log('Total rental segments found:', allRentalSegments.length);
+    
+    if (allRentalSegments.length === 0) {
+      console.log('No rental segments found for MKOR:', mkor.name);
       return { ...mkor, segments: [] };
     }
     
-    // Вычисляем новую дату начала (дата начала первого этапа аренды)
-    const rentalStartDate = rentalSegments[0].start;
+    // Сортируем все сегменты аренды по дате начала
+    allRentalSegments.sort((a, b) => a.start.getTime() - b.start.getTime());
     
-    // Создаём массив длительностей для этапов аренды в правильном порядке
-    const rentalDurations = rentalSegments.map(seg => seg.duration);
+    // Находим общую дату начала (самая ранняя дата аренды)
+    const rentalStartDate = allRentalSegments[0].start;
+    
+    // Создаём массив длительностей для всех этапов аренды в хронологическом порядке
+    const rentalDurations = allRentalSegments.map(seg => seg.duration);
     
     console.log('=== RENTAL MKOR CREATED ===');
     console.log('Name:', mkor.name);
-    console.log('Original start:', job.start);
+    console.log('Total rental segments:', allRentalSegments.length);
     console.log('Rental start:', format(rentalStartDate, 'dd.MM.yyyy'));
-    console.log('All segments with dates:');
-    allSegments.forEach(s => {
-      console.log(`  ${s.stage}: ${format(s.start, 'dd.MM.yyyy')} - ${format(s.end, 'dd.MM.yyyy')} (${s.duration} days)`);
-    });
-    console.log('Rental segments with dates:');
-    rentalSegments.forEach(s => {
+    console.log('All rental segments with dates:');
+    allRentalSegments.forEach(s => {
       console.log(`  ${s.stage}: ${format(s.start, 'dd.MM.yyyy')} - ${format(s.end, 'dd.MM.yyyy')} (${s.duration} days)`);
     });
     console.log('Rental durations:', rentalDurations);
@@ -284,10 +313,10 @@ const RentalTimeline: React.FC<{
       jobs: [],
       // Добавляем отладочную информацию
       _debug: {
-        originalStart: job.start,
+        originalMkorName: mkor.name,
         rentalStart: format(rentalStartDate, 'yyyy-MM-dd'),
         rentalDurations,
-        rentalSegments: rentalSegments.map(s => ({
+        rentalSegments: allRentalSegments.map(s => ({
           stage: s.stage,
           start: format(s.start, 'dd.MM.yyyy'),
           end: format(s.end, 'dd.MM.yyyy'),
@@ -311,11 +340,13 @@ const RentalTimeline: React.FC<{
 
   return (
     <div className="w-full border rounded-lg overflow-hidden bg-background">
-      <div className="overflow-x-auto h-full">
-        <RentalMkorTimeline 
+      <div className="overflow-x-auto h-96">
+        <MkorTimeline 
           mkorUnits={rentalMkors}
           startDate={startDate}
           endDate={endDate}
+          onMkorUnitsChange={() => {}}
+          mode="rental"
         />
       </div>
     </div>
@@ -345,7 +376,7 @@ const ProductionProgram: React.FC<{
   const customers = Array.from(new Set(
     mkorUnits
       .filter(mkor => mkor.jobs && mkor.jobs.length > 0)
-      .map(mkor => mkor.jobs![0].customer)
+      .flatMap(mkor => mkor.jobs!.map(job => job.customer))
       .filter(customer => customer && customer.trim() !== '')
   )).sort();
 
@@ -354,21 +385,48 @@ const ProductionProgram: React.FC<{
   console.log('МКОР с работами:', mkorUnits.filter(mkor => mkor.jobs && mkor.jobs.length > 0).length);
   console.log('Заказчики:', customers);
   console.log('Выбранный заказчик:', selectedCustomer);
+  
+  // Отладочная информация для выбранного заказчика
+  if (selectedCustomer && selectedCustomer !== 'all') {
+    const filteredMkors = mkorUnits
+      .filter(mkor => 
+        mkor.jobs && mkor.jobs.length > 0 && 
+        mkor.jobs.some(job => job.customer === selectedCustomer)
+      )
+      .map(mkor => ({
+        ...mkor,
+        jobs: mkor.jobs!.filter(job => job.customer === selectedCustomer)
+      }));
+    
+    console.log(`Отфильтрованные МКОР для заказчика "${selectedCustomer}":`, 
+      filteredMkors.map(m => ({
+        name: m.name,
+        jobsCount: m.jobs.length,
+        jobs: m.jobs.map(j => ({ customer: j.customer, start: j.start, lpu: j.lpu }))
+      }))
+    );
+  }
 
   // Подсчёт МКОР в работе (уникальные единицы с любым этапом в периоде)
   const mkorInWork = mkorUnits.filter(mkor => {
     if (!mkor.jobs || mkor.jobs.length === 0) return false;
     
-    const job = mkor.jobs[0];
-    const segments = getMkorSegmentsWithDates(mkor, job.start);
+    // Проверяем все работы МКОР
+    for (const job of mkor.jobs) {
+      const segments = getMkorSegmentsWithDates(mkor, job.start);
+      
+      const reportStart = parseISO(startDate);
+      const reportEnd = parseISO(endDate);
+      
+      // Проверяем, есть ли хотя бы один день любого этапа в отчётном периоде
+      if (segments.some(segment => 
+        segment.start <= reportEnd && segment.end >= reportStart
+      )) {
+        return true;
+      }
+    }
     
-    const reportStart = parseISO(startDate);
-    const reportEnd = parseISO(endDate);
-    
-    // Проверяем, есть ли хотя бы один день любого этапа в отчётном периоде
-    return segments.some(segment => 
-      segment.start <= reportEnd && segment.end >= reportStart
-    );
+    return false;
   }).length;
 
   // Подсчёт общего количества транспорта на конец выбранного периода
@@ -383,286 +441,246 @@ const ProductionProgram: React.FC<{
   //     lowLoaders: total.lowLoaders + supply.lowLoaders
   //   }), { tractors: 0, trailers: 0, lowLoaders: 0 });
 
-  // Подсчёт по типам транспорта
+  // Подсчёт максимального количества транспорта на отчетную дату
   const transportBreakdown = mkorUnits.reduce((acc, mkor) => {
     if (!mkor.jobs || mkor.jobs.length === 0) return acc;
     
-    const job = mkor.jobs[0];
-    const segments = getMkorSegmentsWithDates(mkor, job.start);
-    const transportSegments = segments.filter(seg => 
-      ['transitToObject', 'unloading', 'loading', 'transitToMaintenance'].includes(seg.stage)
-    );
-    
-    let days = 0;
-    transportSegments.forEach(segment => {
-      const reportStart = parseISO(startDate);
-      const reportEnd = parseISO(endDate);
+    // Проверяем все работы МКОР
+    for (const job of mkor.jobs) {
+      const segments = getMkorSegmentsWithDates(mkor, job.start);
+      const transportSegments = segments.filter(seg => 
+        ['transitToObject', 'unloading', 'loading', 'transitToMaintenance'].includes(seg.stage)
+      );
       
-      const overlapStart = new Date(Math.max(segment.start.getTime(), reportStart.getTime()));
-      const overlapEnd = new Date(Math.min(segment.end.getTime(), reportEnd.getTime()));
+      // Проверяем, есть ли транспортные этапы в отчетном периоде
+      const hasTransportInPeriod = transportSegments.some(segment => {
+        const reportStart = parseISO(startDate);
+        const reportEnd = parseISO(endDate);
+        
+        return segment.start <= reportEnd && segment.end >= reportStart;
+      });
       
-      if (overlapStart <= overlapEnd) {
-        days += Math.ceil((overlapEnd.getTime() - overlapStart.getTime()) / (24 * 60 * 60 * 1000));
+      // Если есть транспортные этапы в периоде, добавляем транспорт для этого МКОР
+      if (hasTransportInPeriod) {
+        const specs = MKOR_SPECS[mkor.diameter];
+        if (specs) {
+          acc.tractors += specs.tractors;
+          acc.trailers += specs.trailers;
+          acc.lowLoaders += specs.lowLoaders;
+        }
+        // Прерываем цикл, так как нам нужен только один вклад транспорта на МКОР
+        break;
       }
-    });
-    
-    // Используем данные из MKOR_SPECS для определения количества транспорта
-    const specs = MKOR_SPECS[mkor.diameter];
-    if (specs && days > 0) {
-      acc.tractors += specs.tractors * days;
-      acc.trailers += specs.trailers * days;
-      acc.lowLoaders += specs.lowLoaders * days;
     }
     
     return acc;
   }, { tractors: 0, trailers: 0, lowLoaders: 0 });
 
-  // Данные для графиков
-  const months = eachMonthOfInterval({
-    start: parseISO(startDate),
-    end: parseISO(endDate),
-  });
 
-  // График "Количество работ" (уникальные МКОР)
-  const worksData = months.map(month => {
-    const monthStart = startOfMonth(month);
-    const monthEnd = endOfMonth(month);
-    
-    const worksByDiameter: { [key: string]: number } = {};
-    
-    mkorUnits.forEach(mkor => {
-      if (!mkor.jobs || mkor.jobs.length === 0) return;
-      
-      const job = mkor.jobs[0];
-      
-      // Фильтруем по заказчику, если выбран
-      if (selectedCustomer && selectedCustomer !== 'all' && job.customer !== selectedCustomer) {
-        return;
-      }
-      
-      const segments = getMkorSegmentsWithDates(mkor, job.start);
-      
-      // Проверяем, есть ли работа в этом месяце
-      const hasWorkInMonth = segments.some(segment => 
-        segment.start <= monthEnd && segment.end >= monthStart
-      );
-      
-      if (hasWorkInMonth) {
-        // Используем уникальное имя МКОР вместо диаметра
-        worksByDiameter[mkor.name] = (worksByDiameter[mkor.name] || 0) + 1;
-      }
-    });
-    
-    return {
-      month: format(month, 'MMM yyyy', { locale: ru }),
-      ...worksByDiameter,
-    };
-  });
-
-  // График "МКОР в ожидании работы" (уникальные единицы без работы в периоде)
-  const waitingData = months.map(month => {
-    const monthStart = startOfMonth(month);
-    const monthEnd = endOfMonth(month);
-    
-    const waitingByDiameter: { [key: string]: number } = {};
-    
-    mkorUnits.forEach(mkor => {
-      const hasWorkInMonth = mkor.jobs && mkor.jobs.some(job => {
-        const segments = getMkorSegmentsWithDates(mkor, job.start);
-        return segments.some(segment => 
-          segment.start <= monthEnd && segment.end >= monthStart
-        );
-      });
-      
-      if (!hasWorkInMonth) {
-        // Используем уникальное имя МКОР вместо диаметра
-        waitingByDiameter[mkor.name] = (waitingByDiameter[mkor.name] || 0) + 1;
-      }
-    });
-    
-    return {
-      month: format(month, 'MMM yyyy', { locale: ru }),
-      ...waitingByDiameter,
-    };
-  });
 
   return (
     <div className="space-y-6">
-      {/* Карточки KPI */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <Card className="p-6 bg-gradient-to-br from-green-500/10 to-green-600/10 border-green-200/20">
-          <div className="flex items-center gap-4">
-            <div className="p-3 bg-green-500/20 rounded-lg">
-              <BarChart3 className="w-6 h-6 text-green-600" />
-            </div>
-            <div>
-              <p className="text-sm text-muted-foreground">МКОР в работе</p>
-              <p className="text-2xl font-bold text-green-600 transition-all duration-500 ease-in-out">
-                {mkorInWork}
-              </p>
-            </div>
-          </div>
-        </Card>
-        
-        <Card className="p-6 bg-gradient-to-br from-blue-500/10 to-blue-600/10 border-blue-200/20">
-          <div className="flex items-center gap-4">
-            <div className="p-3 bg-blue-500/20 rounded-lg">
-              <Truck className="w-6 h-6 text-blue-600" />
-            </div>
-            <div>
-              <p className="text-sm text-muted-foreground">Транспортные средства в работе</p>
-              <p className="text-2xl font-bold text-blue-600 transition-all duration-500 ease-in-out">
-                {transportDays} дн.
-              </p>
-              <div className="text-xs text-muted-foreground mt-1 transition-all duration-500 ease-in-out">
-                Тягачи: {transportBreakdown.tractors} | Прицепы: {transportBreakdown.trailers} | Тралы: {transportBreakdown.lowLoaders}
-              </div>
-            </div>
-          </div>
-        </Card>
-      </div>
+             {/* Карточки KPI */}
+       <div className="grid grid-cols-1 gap-6">
+         <Card className="p-6 bg-gradient-to-br from-green-500/10 to-green-600/10 border-green-200/20">
+           <div className="flex items-center gap-4">
+             <div className="p-3 bg-green-500/20 rounded-lg">
+               <BarChart3 className="w-6 h-6 text-green-600" />
+             </div>
+             <div className="flex-1">
+               <p className="text-sm text-muted-foreground">МКОР в работе</p>
+               <p className="text-2xl font-bold text-green-600 transition-all duration-500 ease-in-out">
+                 {mkorInWork}
+               </p>
+             </div>
+             <div className="flex items-center gap-6">
+               <div className="text-center">
+                 <Truck className="w-5 h-5 text-blue-600 mx-auto mb-1" />
+                 <p className="text-xs text-muted-foreground">Тягачи</p>
+                 <p className="text-lg font-semibold text-blue-600">{transportBreakdown.tractors}</p>
+               </div>
+               <div className="text-center">
+                 <div className="w-5 h-5 bg-blue-600 rounded-sm mx-auto mb-1 flex items-center justify-center">
+                   <div className="w-3 h-2 bg-white rounded-sm"></div>
+                 </div>
+                 <p className="text-xs text-muted-foreground">Прицепы</p>
+                 <p className="text-lg font-semibold text-blue-600">{transportBreakdown.trailers}</p>
+               </div>
+               <div className="text-center">
+                 <div className="w-5 h-5 bg-blue-600 rounded-sm mx-auto mb-1 flex items-center justify-center">
+                   <div className="w-4 h-1 bg-white rounded-sm"></div>
+                 </div>
+                 <p className="text-xs text-muted-foreground">Тралы</p>
+                 <p className="text-lg font-semibold text-blue-600">{transportBreakdown.lowLoaders}</p>
+               </div>
+             </div>
+           </div>
+         </Card>
+       </div>
 
-      {/* Графики */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card className="p-6">
-          <h3 className="text-lg font-semibold mb-4">Количество работ</h3>
-          <div className="h-64">
-            {worksData.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={worksData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="month" />
-                  <YAxis />
-                  <Tooltip />
-                  <Legend />
-                  {Object.keys(worksData[0] || {}).filter(key => key !== 'month').map((mkorName, index) => (
-                    <Bar 
-                      key={mkorName} 
-                      dataKey={mkorName} 
-                      fill={`hsl(${index * 60}, 70%, 50%)`}
-                      name={mkorName}
-                    />
-                  ))}
-                </BarChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="flex items-center justify-center h-full text-muted-foreground">
-                <p>Нет данных для отображения</p>
-              </div>
-            )}
-          </div>
-        </Card>
-        
-        <Card className="p-6">
-          <h3 className="text-lg font-semibold mb-4">МКОР в ожидании работы</h3>
-          <div className="h-64">
-            {waitingData.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={waitingData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="month" />
-                  <YAxis />
-                  <Tooltip />
-                  <Legend />
-                  {Object.keys(waitingData[0] || {}).filter(key => key !== 'month').map((mkorName, index) => (
-                    <Bar 
-                      key={mkorName} 
-                      dataKey={mkorName} 
-                      fill={`hsl(${index * 60 + 180}, 70%, 50%)`}
-                      name={mkorName}
-                    />
-                  ))}
-                </BarChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="flex items-center justify-center h-full text-muted-foreground">
-                <p>Нет данных для отображения</p>
-              </div>
-            )}
-          </div>
-        </Card>
-      </div>
+             {/* Новые чарты утилизации и аренды */}
+             <UtilizationAndRentalCharts 
+               mkorUnits={mkorUnits}
+               startDate={startDate}
+               endDate={endDate}
+             />
 
-      {/* Раздел заказчиков - перемещён в центр */}
-      <div className="text-center mb-6">
-        <h2 className="text-2xl font-bold text-foreground mb-4">Работы по заказчику</h2>
-        <div className="flex items-center justify-center gap-4">
-          <span className="text-sm font-medium">Выберите заказчика:</span>
-          <Select value={selectedCustomer} onValueChange={setSelectedCustomer}>
-            <SelectTrigger className="w-[300px]">
-              <SelectValue placeholder="Все заказчики" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Все заказчики</SelectItem>
-              {customers.map(customer => (
-                <SelectItem key={customer} value={customer}>
-                  {customer}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
+             {/* Раздел заказчиков - перемещён в центр */}
+       <div className="text-center mb-6 max-w-full">
+         <h2 className="text-2xl font-bold text-foreground mb-4">Работы по заказчику</h2>
+         <div className="flex items-center justify-center gap-4 flex-wrap">
+           <span className="text-sm font-medium">Выберите заказчика:</span>
+           <Select value={selectedCustomer} onValueChange={setSelectedCustomer}>
+             <SelectTrigger className="w-[300px] max-w-full">
+               <SelectValue placeholder="Все заказчики" />
+             </SelectTrigger>
+             <SelectContent>
+               <SelectItem value="all">Все заказчики</SelectItem>
+               {customers.map(customer => (
+                 <SelectItem key={customer} value={customer}>
+                   {customer}
+                 </SelectItem>
+               ))}
+             </SelectContent>
+           </Select>
+         </div>
+       </div>
       
-      {/* Графики заказчика - только если выбран конкретный заказчик */}
-      {selectedCustomer && selectedCustomer !== 'all' && (
-        <div className="space-y-6">
-          {/* График работ - на всю ширину с правильным скроллом */}
-          <Card className="p-6">
-            <h4 className="text-lg font-semibold mb-4">График работ</h4>
-            <WorkTimeline 
-              mkorUnits={mkorUnits.filter(mkor => 
-                mkor.jobs && mkor.jobs.length > 0 && 
-                mkor.jobs[0].customer === selectedCustomer
-              )}
-              startDate={startDate}
-              endDate={endDate}
-            />
-          </Card>
-          
-          {/* Календарь аренды - на всю ширину с правильным скроллом */}
-          <Card className="p-6">
-            <h4 className="text-lg font-semibold mb-4">Календарь аренды</h4>
-            <RentalTimeline 
-              mkorUnits={mkorUnits.filter(mkor => 
-                mkor.jobs && mkor.jobs.length > 0 && 
-                mkor.jobs[0].customer === selectedCustomer
-              )}
-              startDate={startDate}
-              endDate={endDate}
-            />
-            {/* Статистика по диаметрам */}
-            <div className="mt-4 p-4 bg-secondary/30 rounded-lg">
-              <h5 className="text-sm font-medium mb-2">Статистика аренды по диаметрам:</h5>
-              <div className="grid grid-cols-2 gap-4 text-sm">
-                {Object.entries(
-                  mkorUnits
-                    .filter(mkor => 
-                      mkor.jobs && mkor.jobs.length > 0 && 
-                      mkor.jobs[0].customer === selectedCustomer
-                    )
-                    .reduce((acc, mkor) => {
-                      const diameter = mkor.diameter;
-                      if (!acc[diameter]) {
-                        acc[diameter] = { count: 0, totalDays: 0 };
-                      }
-                      acc[diameter].count += 1;
-                      // Считаем дни аренды (разгрузка + работа + погрузка)
-                      const segments = getMkorSegmentsWithDates(mkor, mkor.jobs![0].start);
-                      const rentalDays = segments
-                        .filter(seg => ['unloading', 'working', 'loading'].includes(seg.stage))
-                        .reduce((sum, seg) => sum + seg.duration, 0);
-                      acc[diameter].totalDays += rentalDays;
-                      return acc;
-                    }, {} as { [key: number]: { count: number; totalDays: number } })
-                ).map(([diameter, stats]) => (
-                  <div key={diameter} className="flex justify-between">
-                    <span>DN-{diameter}:</span>
-                    <span>{stats.count} ед. ({stats.totalDays} дн.)</span>
-                  </div>
-                ))}
-              </div>
-            </div>
+             {/* Графики заказчика - только если выбран конкретный заказчик */}
+       {selectedCustomer && selectedCustomer !== 'all' && (
+         <div className="space-y-6 max-w-full">
+           {/* График работ - на всю ширину с правильным скроллом */}
+           <Card className="p-6 max-w-full">
+             <h4 className="text-lg font-semibold mb-4">График работ</h4>
+             <div className="max-w-full overflow-hidden">
+               <WorkTimeline 
+                 mkorUnits={mkorUnits
+                   .filter(mkor => 
+                     mkor.jobs && mkor.jobs.length > 0 && 
+                     mkor.jobs.some(job => job.customer === selectedCustomer)
+                   )
+                   .map(mkor => ({
+                     ...mkor,
+                     jobs: mkor.jobs!.filter(job => job.customer === selectedCustomer)
+                   }))
+                 }
+                 startDate={startDate}
+                 endDate={endDate}
+               />
+             </div>
+           </Card>
+           
+           {/* Календарь аренды - на всю ширину с правильным скроллом */}
+           <Card className="p-6 max-w-full">
+             <h4 className="text-lg font-semibold mb-4">Календарь аренды</h4>
+             <div className="max-w-full overflow-hidden">
+               <RentalTimeline 
+                 mkorUnits={mkorUnits
+                   .filter(mkor => 
+                     mkor.jobs && mkor.jobs.length > 0 && 
+                     mkor.jobs.some(job => job.customer === selectedCustomer)
+                   )
+                   .map(mkor => ({
+                     ...mkor,
+                     jobs: mkor.jobs!.filter(job => job.customer === selectedCustomer)
+                   }))
+                 }
+                 startDate={startDate}
+                 endDate={endDate}
+               />
+             </div>
+                         {/* Статистика аренды по МКОР */}
+             <div className="mt-4 p-4 bg-secondary/30 rounded-lg">
+               <h5 className="text-sm font-medium mb-4">Статистика аренды по МКОР:</h5>
+               <div className="overflow-x-auto">
+                 <table className="w-full text-sm">
+                   <thead>
+                     <tr className="border-b">
+                                               <th className="text-left p-2 font-medium w-1/5">МКОР</th>
+                        <th className="text-left p-2 font-medium w-1/5">Период аренды</th>
+                        <th className="text-left p-2 font-medium w-1/4">Дата выполнения</th>
+                        <th className="text-left p-2 font-medium w-1/3">ЛПУ</th>
+                     </tr>
+                   </thead>
+                   <tbody>
+                     {(() => {
+                       // Создаем массив всех строк таблицы
+                       const tableRows = [];
+                       
+                       for (const mkor of mkorUnits) {
+                         if (!mkor.jobs || mkor.jobs.length === 0) continue;
+                         
+                         // Находим все работы для выбранного заказчика
+                         const customerJobs = mkor.jobs.filter(job => job.customer === selectedCustomer);
+                         
+                         // Для каждой работы создаем отдельную строку
+                         for (const job of customerJobs) {
+                           // Используем getJobSegments для получения сегментов конкретной работы
+                           const jobSegments = getJobSegments(mkor, job);
+                           let currentDate = parseISO(job.start);
+                           const stages = ['transitToObject', 'unloading', 'working', 'loading', 'transitToMaintenance', 'maintenance'] as const;
+                           
+                           // Создаем сегменты с датами для этой конкретной работы
+                           const segments = jobSegments.map((duration, index) => {
+                             if (duration > 0) {
+                               const stage = stages[index];
+                               const endDate = addDays(currentDate, duration - 1);
+                               endDate.setHours(23, 59, 59, 999);
+                               
+                               const segment = {
+                                 stage,
+                                 start: new Date(currentDate),
+                                 end: endDate,
+                                 duration,
+                                 index
+                               };
+                               
+                               currentDate = addDays(endDate, 1);
+                               currentDate.setHours(0, 0, 0, 0);
+                               
+                               return segment;
+                             }
+                             return null;
+                           }).filter(Boolean);
+                           
+                           const rentalSegments = segments.filter(seg => ['unloading', 'working', 'loading'].includes(seg.stage));
+                           
+                           if (rentalSegments.length === 0) continue;
+                           
+                           const rentalDays = rentalSegments.reduce((sum, seg) => sum + seg.duration, 0);
+                           const startDate = format(rentalSegments[0].start, 'dd.MM.yyyy');
+                           const endDate = format(rentalSegments[rentalSegments.length - 1].end, 'dd.MM.yyyy');
+                           const lpu = job.lpu || 'Не указано';
+                           
+                           tableRows.push({
+                             mkorName: mkor.name,
+                             rentalDays,
+                             startDate,
+                             endDate,
+                             lpu,
+                             key: `${mkor.name}-${job.start}-${job.customer}`,
+                             startTime: rentalSegments[0].start.getTime()
+                           });
+                         }
+                       }
+                       
+                       // Сортируем по дате начала
+                       tableRows.sort((a, b) => a.startTime - b.startTime);
+                       
+                       // Рендерим отсортированные строки
+                       return tableRows.map(row => (
+                         <tr key={row.key} className="border-b border-border/50">
+                           <td className="p-2 font-medium w-1/5">{row.mkorName}</td>
+                           <td className="p-2 w-1/5">{row.rentalDays} дней</td>
+                           <td className="p-2 w-1/4">{row.startDate}-{row.endDate}</td>
+                           <td className="p-2 w-1/3">{row.lpu}</td>
+                         </tr>
+                       ));
+                     })()}
+                   </tbody>
+                 </table>
+               </div>
+             </div>
           </Card>
         </div>
       )}
@@ -675,6 +693,30 @@ const MaintenanceReport: React.FC<{
   endDate: string;
   mkorUnits: MkorUnit[];
 }> = ({ startDate, endDate, mkorUnits }) => {
+  // Отладочная информация
+  console.log('MaintenanceReport - входные данные:', {
+    startDate,
+    endDate,
+    reportPeriod: `${startDate} - ${endDate}`,
+    mkorUnitsCount: mkorUnits.length,
+    mkorUnits: mkorUnits.map(m => ({
+      name: m.name,
+      jobsCount: m.jobs?.length || 0,
+      jobs: m.jobs?.map(j => ({ customer: j.customer, start: j.start }))
+    }))
+  });
+  
+  // Проверяем, включает ли период дату 20.09.2025
+  const targetDate = parseISO('2025-09-20');
+  const reportStart = parseISO(startDate);
+  const reportEnd = parseISO(endDate);
+  console.log('Проверка периода для 20.09.2025:', {
+    targetDate: targetDate.toISOString(),
+    reportStart: reportStart.toISOString(),
+    reportEnd: reportEnd.toISOString(),
+    isInPeriod: targetDate >= reportStart && targetDate <= reportEnd
+  });
+  
   // Проверяем, что даты выбраны
   if (!startDate || !endDate) {
     return (
@@ -691,23 +733,42 @@ const MaintenanceReport: React.FC<{
   const mkorsWithMaintenance = mkorUnits.filter(mkor => {
     if (!mkor.jobs || mkor.jobs.length === 0) return false;
     
-    const job = mkor.jobs[0];
-    const segments = getJobSegments(mkor, job);
+    // Проверяем все работы МКОР
+    for (const job of mkor.jobs) {
+      const segments = getJobSegments(mkor, job);
+      
+      // Проверяем, есть ли этап ТОИР (индекс 5) и он больше 0 дней
+      if (!segments[5] || segments[5] <= 0) continue;
+      
+      // Вычисляем дату начала ТОИР
+      const allSegments = getMkorSegmentsWithDates(mkor, job.start);
+      const maintenanceSegment = allSegments.find(seg => seg.stage === 'maintenance');
+      
+      if (!maintenanceSegment) continue;
+      
+      // Проверяем, попадает ли ТОИР в выбранный период
+      const reportStart = parseISO(startDate);
+      const reportEnd = parseISO(endDate);
+      
+      // Отладочная информация для DN-1400
+      if (mkor.name === 'DN-1400') {
+        console.log('DN-1400 ТОИР проверка:', {
+          jobCustomer: job.customer,
+          jobStart: job.start,
+          maintenanceStart: maintenanceSegment.start,
+          maintenanceEnd: maintenanceSegment.end,
+          reportStart,
+          reportEnd,
+          isInPeriod: maintenanceSegment.start <= reportEnd && maintenanceSegment.end >= reportStart
+        });
+      }
+      
+      if (maintenanceSegment.start <= reportEnd && maintenanceSegment.end >= reportStart) {
+        return true;
+      }
+    }
     
-    // Проверяем, есть ли этап ТОИР (индекс 5) и он больше 0 дней
-    if (!segments[5] || segments[5] <= 0) return false;
-    
-    // Вычисляем дату начала ТОИР
-    const allSegments = getMkorSegmentsWithDates(mkor, job.start);
-    const maintenanceSegment = allSegments.find(seg => seg.stage === 'maintenance');
-    
-    if (!maintenanceSegment) return false;
-    
-    // Проверяем, попадает ли ТОИР в выбранный период
-    const reportStart = parseISO(startDate);
-    const reportEnd = parseISO(endDate);
-    
-    return maintenanceSegment.start <= reportEnd && maintenanceSegment.end >= reportStart;
+    return false;
   });
 
   // Если нет ТОИР в выбранном периоде
@@ -724,25 +785,43 @@ const MaintenanceReport: React.FC<{
 
   // Создаём МКОР с правильными сегментами для ТОИР
   const maintenanceMkors = mkorsWithMaintenance.map(mkor => {
-    const job = mkor.jobs![0];
-    const allSegments = getMkorSegmentsWithDates(mkor, job.start);
-    const maintenanceSegment = allSegments.find(seg => seg.stage === 'maintenance');
+    // Находим все работы с ТОИР в выбранном периоде
+    const maintenanceSegments = [];
     
-    if (!maintenanceSegment) {
+    for (const job of mkor.jobs!) {
+      const allSegments = getMkorSegmentsWithDates(mkor, job.start);
+      const maintenanceSegment = allSegments.find(seg => seg.stage === 'maintenance');
+      
+      if (maintenanceSegment) {
+        const reportStart = parseISO(startDate);
+        const reportEnd = parseISO(endDate);
+        
+        if (maintenanceSegment.start <= reportEnd && maintenanceSegment.end >= reportStart) {
+          maintenanceSegments.push({
+            job,
+            segment: maintenanceSegment
+          });
+        }
+      }
+    }
+    
+    if (maintenanceSegments.length === 0) {
       return { ...mkor, segments: [] };
     }
     
-    // Создаём МКОР только с этапом ТОИР
+    // Создаём МКОР с сегментами ТОИР
     const maintenanceMkor = {
       ...mkor,
-      start: format(maintenanceSegment.start, 'yyyy-MM-dd'),
-      segments: [maintenanceSegment.duration], // Только длительность ТОИР
+      start: format(maintenanceSegments[0].segment.start, 'yyyy-MM-dd'),
+      segments: maintenanceSegments.map(ms => ms.segment.duration), // Все длительности ТОИР
       jobs: [], // Убираем jobs, чтобы MkorTimeline использовал mkor.start и mkor.segments
       _debug: {
-        originalStart: job.start,
-        maintenanceStart: format(maintenanceSegment.start, 'yyyy-MM-dd'),
-        maintenanceEnd: format(maintenanceSegment.end, 'yyyy-MM-dd'),
-        maintenanceDuration: maintenanceSegment.duration
+        maintenanceSegments: maintenanceSegments.map(ms => ({
+          job: ms.job,
+          maintenanceStart: format(ms.segment.start, 'yyyy-MM-dd'),
+          maintenanceEnd: format(ms.segment.end, 'yyyy-MM-dd'),
+          maintenanceDuration: ms.segment.duration
+        }))
       }
     } as any;
     
@@ -773,25 +852,22 @@ const MaintenanceReport: React.FC<{
       {/* Заголовок */}
       <div className="text-center mb-6">
         <h2 className="text-2xl font-bold text-foreground mb-2">ТОиР и загрузка подрядчика</h2>
-        <p className="text-muted-foreground">
-          Период: {format(parseISO(startDate), 'dd.MM.yyyy')} - {format(parseISO(endDate), 'dd.MM.yyyy')}
-        </p>
       </div>
 
-      {/* Статистика */}
-      <Card className="p-6 bg-gradient-to-br from-orange-500/10 to-orange-600/10 border-orange-200/20">
-        <div className="flex items-center gap-4">
-          <div className="p-3 bg-orange-500/20 rounded-lg">
-            <Wrench className="w-6 h-6 text-orange-600" />
-          </div>
-          <div>
-            <p className="text-sm text-muted-foreground">МКОР в ТОИР</p>
-            <p className="text-2xl font-bold text-orange-600">
-              {mkorsWithMaintenance.length}
-            </p>
-          </div>
-        </div>
-      </Card>
+       {/* Статистика */}
+       <Card className="p-6 bg-gradient-to-br from-orange-500/10 to-orange-600/10 border-orange-200/20 max-w-full">
+         <div className="flex items-center gap-4">
+           <div className="p-3 bg-orange-500/20 rounded-lg">
+             <Wrench className="w-6 h-6 text-orange-600" />
+           </div>
+           <div>
+             <p className="text-sm text-muted-foreground">ТОИР в отчетном периоде</p>
+             <p className="text-2xl font-bold text-orange-600">
+               {maintenanceMkors.reduce((total, mkor) => total + mkor._debug.maintenanceSegments.length, 0)}
+             </p>
+           </div>
+         </div>
+       </Card>
 
       {/* Временная шкала ТОИР */}
       <Card className="p-6">
@@ -808,73 +884,51 @@ const MaintenanceReport: React.FC<{
         </div>
       </Card>
 
-      {/* Детальная статистика - вынесена из контейнера графика */}
-      <Card className="p-6">
-        <h3 className="text-lg font-semibold mb-4">Детальная статистика ТОИР</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* По диаметрам */}
-          <div>
-            <h4 className="text-sm font-medium mb-3">По диаметрам труб:</h4>
-            <div className="space-y-2">
-              {Object.entries(
-                mkorsWithMaintenance.reduce((acc, mkor) => {
-                  const diameter = mkor.diameter;
-                  if (!acc[diameter]) {
-                    acc[diameter] = { count: 0, totalDays: 0 };
-                  }
-                  acc[diameter].count += 1;
-                  
-                  // Считаем дни ТОИР
-                  const job = mkor.jobs![0];
-                  const segments = getJobSegments(mkor, job);
-                  const maintenanceDays = segments[5] || 0;
-                  acc[diameter].totalDays += maintenanceDays;
-                  
-                  return acc;
-                }, {} as { [key: number]: { count: number; totalDays: number } })
-              ).map(([diameter, stats]) => (
-                <div key={diameter} className="flex justify-between items-center p-2 bg-secondary/30 rounded">
-                  <span className="font-medium">DN-{diameter}</span>
-                  <span className="text-sm text-muted-foreground">
-                    {stats.count} ед. ({stats.totalDays} дн.)
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* По заказчикам */}
-          <div>
-            <h4 className="text-sm font-medium mb-3">По заказчикам:</h4>
-            <div className="space-y-2">
-              {Object.entries(
-                mkorsWithMaintenance.reduce((acc, mkor) => {
-                  const customer = mkor.jobs![0].customer;
-                  if (!acc[customer]) {
-                    acc[customer] = { count: 0, totalDays: 0 };
-                  }
-                  acc[customer].count += 1;
-                  
-                  // Считаем дни ТОИР
-                  const job = mkor.jobs![0];
-                  const segments = getJobSegments(mkor, job);
-                  const maintenanceDays = segments[5] || 0;
-                  acc[customer].totalDays += maintenanceDays;
-                  
-                  return acc;
-                }, {} as { [key: string]: { count: number; totalDays: number } })
-              ).map(([customer, stats]) => (
-                <div key={customer} className="flex justify-between items-center p-2 bg-secondary/30 rounded">
-                  <span className="font-medium">{customer}</span>
-                  <span className="text-sm text-muted-foreground">
-                    {stats.count} ед. ({stats.totalDays} дн.)
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </Card>
+             {/* Детальная статистика ТОИР - перепроектированная таблица */}
+       <Card className="p-6">
+         <h3 className="text-lg font-semibold mb-4">Детальная статистика ТОИР</h3>
+         <div className="overflow-x-auto">
+           <table className="w-full text-sm">
+             <thead>
+               <tr className="border-b">
+                                   <th className="text-left p-2 font-medium w-1/8">МКОР</th>
+                  <th className="text-left p-2 font-medium w-1/8">Длительность ТОИР</th>
+                  <th className="text-left p-2 font-medium w-1/6">Период ТОИР</th>
+                  <th className="text-left p-2 font-medium w-1/2">Локация</th>
+               </tr>
+             </thead>
+             <tbody>
+               {(() => {
+                 // Создаем массив всех строк таблицы
+                 const tableRows = maintenanceMkors.flatMap(maintenanceMkor => 
+                   maintenanceMkor._debug.maintenanceSegments.map((ms, index) => ({
+                     mkorName: maintenanceMkor.name,
+                     maintenanceDuration: ms.maintenanceDuration,
+                     maintenanceStartDate: ms.maintenanceStart,
+                     maintenanceEndDate: ms.maintenanceEnd,
+                     location: ms.job.customer + (ms.job.lpu ? `\n(${ms.job.lpu})` : ''),
+                     key: `${maintenanceMkor.id}-${index}`,
+                     startTime: parseISO(ms.maintenanceStart).getTime()
+                   }))
+                 );
+                 
+                 // Сортируем по дате начала
+                 tableRows.sort((a, b) => a.startTime - b.startTime);
+                 
+                 // Рендерим отсортированные строки
+                 return tableRows.map(row => (
+                   <tr key={row.key} className="border-b border-border/50">
+                     <td className="p-2 font-medium w-1/8">{row.mkorName}</td>
+                     <td className="p-2 w-1/8">{row.maintenanceDuration} дн.</td>
+                     <td className="p-2 w-1/6">{row.maintenanceStartDate}-{row.maintenanceEndDate}</td>
+                     <td className="p-2 w-1/2 whitespace-pre-line">{row.location}</td>
+                   </tr>
+                 ));
+               })()}
+             </tbody>
+           </table>
+         </div>
+       </Card>
     </div>
   );
 };
@@ -884,16 +938,10 @@ const LogisticsReport: React.FC<{
   endDate: string;
   mkorUnits: MkorUnit[];
 }> = ({ startDate, endDate, mkorUnits }) => {
-  return (
-    <div className="flex items-center justify-center h-64 text-muted-foreground">
-      <div className="text-center">
-        <Route className="w-12 h-12 mx-auto mb-4" />
-        <p>Логистический отчёт</p>
-        <p className="text-sm mt-2">В разработке</p>
-      </div>
-    </div>
-  );
+  return <DistanceCalculator />;
 };
+
+
 
 const PlaceholderReport: React.FC<{
   startDate: string;
@@ -970,6 +1018,7 @@ export const Reports: React.FC<ReportsProps> = ({
             mkorUnits={mkorUnits}
           />
         );
+
       case 'placeholder':
         return (
           <PlaceholderReport
@@ -989,13 +1038,15 @@ export const Reports: React.FC<ReportsProps> = ({
         <div className="flex-shrink-0 p-6">
           <h1 className="text-3xl font-bold text-foreground mb-8 text-center">Отчёты</h1>
           
-          <DateRangePicker
-            startDate={reportStartDate}
-            endDate={reportEndDate}
-            onDateChange={handleDateChange}
-            projectStart={projectStart}
-            projectEnd={projectEnd}
-          />
+          {selectedTab !== 'logistics' && (
+            <DateRangePicker
+              startDate={reportStartDate}
+              endDate={reportEndDate}
+              onDateChange={handleDateChange}
+              projectStart={projectStart}
+              projectEnd={projectEnd}
+            />
+          )}
         </div>
         
         <div className="flex-1 flex gap-6 px-6 pb-6 max-w-full">

@@ -233,6 +233,7 @@ const Index = () => {
               onMkorUnitsChange={handleMkorUnitsChange}
               scrollRef={mkorTimelineScrollRef}
               onScroll={handleMkorScroll}
+              mode="full"
             />
             <TransportChart
               startDate={startDate}

@@ -1,4 +1,14 @@
+require('dotenv').config();
 const { PrismaClient } = require('@prisma/client');
+
+// Установка переменных окружения если они не загружены
+if (!process.env.DATABASE_URL) {
+  process.env.DATABASE_URL = 'file:./dev.db';
+}
+if (!process.env.YANDEX_MAPS_API_KEY) {
+  process.env.YANDEX_MAPS_API_KEY = '8d239359-e2cf-4935-a8ff-1cf112af5393';
+}
+
 const prisma = new PrismaClient();
 
 async function checkDB() {
@@ -24,8 +34,20 @@ async function checkDB() {
   
   console.log(`\nЛПУ для "${testCustomer}":`, lpus.length);
   lpus.forEach((lpu, i) => {
-    console.log(`${i + 1}. ${lpu.name}`);
+    console.log(`${i + 1}. ${lpu.name} - Координаты: ${lpu.latitude}, ${lpu.longitude}`);
   });
+  
+  // Проверим общее количество ЛПУ с координатами
+  const allLpus = await prisma.lpu.findMany({
+    where: {
+      AND: [
+        { latitude: { not: null } },
+        { longitude: { not: null } }
+      ]
+    }
+  });
+  
+  console.log(`\nВсего ЛПУ с координатами: ${allLpus.length}`);
   
   await prisma.$disconnect();
 }
