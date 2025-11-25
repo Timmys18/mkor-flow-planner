@@ -7,7 +7,7 @@ import { ru } from 'date-fns/locale';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 import { Calendar as CalendarComponent } from '@/components/ui/calendar';
 import { cn } from '@/lib/utils';
-import { MkorUnit, MKOR_SPECS, getJobSegments } from '@/types/mkor';
+import { MkorUnit, MKOR_SPECS, getJobSegments, MkorJob } from '@/types/mkor';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ResponsiveContainer } from 'recharts';
 import { MkorTimeline } from '@/components/MkorTimeline';
@@ -139,24 +139,19 @@ const DateRangePicker: React.FC<{
   );
 };
 
-// Функция для получения сегментов с датами (как в MkorTimeline)
-const getMkorSegmentsWithDates = (mkor: MkorUnit, startDate: string) => {
-  if (!mkor.jobs || mkor.jobs.length === 0) return [];
-  
-  // Берем первую работу для расчета сегментов
-  const job = mkor.jobs[0];
+// Функция для получения сегментов с датами для КОНКРЕТНОЙ работы
+const getMkorSegmentsWithDates = (mkor: MkorUnit, job: MkorJob) => {
+  if (!job || !job.start) return [];
   const segments = getJobSegments(mkor, job);
-  
-  const result = [];
-  let currentDate = parseISO(startDate);
+  const result: Array<{ stage: string; start: Date; end: Date; duration: number; index: number; }> = [];
+  let currentDate = parseISO(job.start);
   const stages = ['transitToObject', 'unloading', 'working', 'loading', 'transitToMaintenance', 'maintenance'] as const;
-  
+
   stages.forEach((stage, index) => {
     const duration = segments[index] || 0;
     if (duration > 0) {
       const endDate = addDays(currentDate, duration - 1);
       endDate.setHours(23, 59, 59, 999);
-      
       result.push({
         stage,
         start: new Date(currentDate),
@@ -164,9 +159,9 @@ const getMkorSegmentsWithDates = (mkor: MkorUnit, startDate: string) => {
         duration,
         index,
       });
-      
-      currentDate = addDays(endDate, 1);
-      currentDate.setHours(0, 0, 0, 0);
+      const next = addDays(endDate, 1);
+      next.setHours(0, 0, 0, 0);
+      currentDate = next;
     }
   });
   return result;
@@ -216,7 +211,7 @@ const WorkTimeline: React.FC<{
 }> = ({ mkorUnits, startDate, endDate }) => {
   return (
     <div className="w-full border rounded-lg overflow-hidden bg-background">
-      <div className="overflow-x-auto h-96">
+      <div className="overflow-x-auto h-96 pb-4" style={{ scrollbarGutter: 'both-edges', overflowY: 'hidden' }}>
         <MkorTimeline 
           mkorUnits={mkorUnits}
           startDate={startDate}
@@ -269,7 +264,7 @@ const RentalTimeline: React.FC<{
     const allRentalSegments = [];
     
     for (const job of mkor.jobs!) {
-      const allSegments = getMkorSegmentsWithDates(mkor, job.start);
+      const allSegments = getMkorSegmentsWithDates(mkor, job);
       const rentalSegments = allSegments.filter(segment => 
         ['unloading', 'working', 'loading'].includes(segment.stage)
       );
@@ -340,7 +335,7 @@ const RentalTimeline: React.FC<{
 
   return (
     <div className="w-full border rounded-lg overflow-hidden bg-background">
-      <div className="overflow-x-auto h-96">
+      <div className="overflow-x-auto h-96 pb-4" style={{ scrollbarGutter: 'both-edges', overflowY: 'hidden' }}>
         <MkorTimeline 
           mkorUnits={rentalMkors}
           startDate={startDate}
@@ -413,7 +408,7 @@ const ProductionProgram: React.FC<{
     
     // Проверяем все работы МКОР
     for (const job of mkor.jobs) {
-      const segments = getMkorSegmentsWithDates(mkor, job.start);
+      const segments = getMkorSegmentsWithDates(mkor, job);
       
       const reportStart = parseISO(startDate);
       const reportEnd = parseISO(endDate);
@@ -447,7 +442,7 @@ const ProductionProgram: React.FC<{
     
     // Проверяем все работы МКОР
     for (const job of mkor.jobs) {
-      const segments = getMkorSegmentsWithDates(mkor, job.start);
+      const segments = getMkorSegmentsWithDates(mkor, job);
       const transportSegments = segments.filter(seg => 
         ['transitToObject', 'unloading', 'loading', 'transitToMaintenance'].includes(seg.stage)
       );
@@ -668,14 +663,14 @@ const ProductionProgram: React.FC<{
                        tableRows.sort((a, b) => a.startTime - b.startTime);
                        
                        // Рендерим отсортированные строки
-                       return tableRows.map(row => (
-                         <tr key={row.key} className="border-b border-border/50">
-                           <td className="p-2 font-medium w-1/5">{row.mkorName}</td>
-                           <td className="p-2 w-1/5">{row.rentalDays} дней</td>
-                           <td className="p-2 w-1/4">{row.startDate}-{row.endDate}</td>
-                           <td className="p-2 w-1/3">{row.lpu}</td>
-                         </tr>
-                       ));
+                        return tableRows.map(row => (
+                          <tr key={row.key} className="border-b border-border/50">
+                            <td className="p-2 font-medium w-1/5">{row.mkorName}</td>
+                            <td className="p-2 w-1/5">{row.rentalDays} дней</td>
+                          <td className="p-2 w-1/4">{row.startDate} — {row.endDate}</td>
+                            <td className="p-2 w-1/3">{row.lpu}</td>
+                          </tr>
+                        ));
                      })()}
                    </tbody>
                  </table>
@@ -741,7 +736,7 @@ const MaintenanceReport: React.FC<{
       if (!segments[5] || segments[5] <= 0) continue;
       
       // Вычисляем дату начала ТОИР
-      const allSegments = getMkorSegmentsWithDates(mkor, job.start);
+      const allSegments = getMkorSegmentsWithDates(mkor, job);
       const maintenanceSegment = allSegments.find(seg => seg.stage === 'maintenance');
       
       if (!maintenanceSegment) continue;
@@ -789,7 +784,7 @@ const MaintenanceReport: React.FC<{
     const maintenanceSegments = [];
     
     for (const job of mkor.jobs!) {
-      const allSegments = getMkorSegmentsWithDates(mkor, job.start);
+      const allSegments = getMkorSegmentsWithDates(mkor, job);
       const maintenanceSegment = allSegments.find(seg => seg.stage === 'maintenance');
       
       if (maintenanceSegment) {
@@ -818,8 +813,8 @@ const MaintenanceReport: React.FC<{
       _debug: {
         maintenanceSegments: maintenanceSegments.map(ms => ({
           job: ms.job,
-          maintenanceStart: format(ms.segment.start, 'yyyy-MM-dd'),
-          maintenanceEnd: format(ms.segment.end, 'yyyy-MM-dd'),
+          maintenanceStart: format(ms.segment.start, 'dd.MM.yyyy'),
+          maintenanceEnd: format(ms.segment.end, 'dd.MM.yyyy'),
           maintenanceDuration: ms.segment.duration
         }))
       }
@@ -863,7 +858,14 @@ const MaintenanceReport: React.FC<{
            <div>
              <p className="text-sm text-muted-foreground">ТОИР в отчетном периоде</p>
              <p className="text-2xl font-bold text-orange-600">
-               {maintenanceMkors.reduce((total, mkor) => total + mkor._debug.maintenanceSegments.length, 0)}
+               {(() => {
+                 // Считаем общее количество ТОиР, а не уникальных МКОР
+                 let totalMaintenanceCount = 0;
+                 maintenanceMkors.forEach(mkor => {
+                   totalMaintenanceCount += mkor._debug?.maintenanceSegments?.length || 0;
+                 });
+                 return totalMaintenanceCount;
+               })()}
              </p>
            </div>
          </div>
@@ -872,8 +874,8 @@ const MaintenanceReport: React.FC<{
       {/* Временная шкала ТОИР */}
       <Card className="p-6">
         <h3 className="text-lg font-semibold mb-4">Временная шкала ТОИР</h3>
-        <div className="w-full border rounded-lg overflow-hidden bg-background">
-          <div className="overflow-x-auto">
+          <div className="w-full border rounded-lg overflow-hidden bg-background">
+            <div className="overflow-x-auto pb-4" style={{ scrollbarGutter: 'both-edges', overflowY: 'hidden' }}>
             <MkorTimeline 
               mkorUnits={maintenanceMkors}
               startDate={startDate}

@@ -158,9 +158,12 @@ export class YandexMapsService {
    * Оценка времени в пути (учитывая среднюю скорость грузового транспорта)
    */
   private estimateTravelTime(distance: number): number {
-    const averageSpeed = 60; // км/ч для грузового транспорта
-    const speedInMps = averageSpeed * 1000 / 3600; // м/с
-    return Math.round(distance / speedInMps);
+    // Политика: максимум 400 км в календарные сутки (8 часов вождения)
+    const maxPerDayKm = 400;
+    const km = distance / 1000;
+    const days = Math.ceil(km / maxPerDayKm);
+    // Возвращаем в секундах: количество полных календарных суток
+    return days * 24 * 60 * 60;
   }
 
   /**
@@ -234,14 +237,16 @@ export class YandexMapsService {
    * Форматирование времени для отображения
    */
   static formatDuration(seconds: number): string {
-    const hours = Math.floor(seconds / 3600);
+    const days = Math.floor(seconds / 86400);
+    if (days >= 1) {
+      return `${days} дн.`;
+    }
+    const hours = Math.floor((seconds % 86400) / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
-    
     if (hours > 0) {
       return `${hours}ч ${minutes}мин`;
-    } else {
-      return `${minutes}мин`;
     }
+    return `${minutes}мин`;
   }
 }
 

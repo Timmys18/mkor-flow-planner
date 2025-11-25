@@ -203,32 +203,62 @@ const SortableMkorRow: React.FC<SortableMkorRowProps> = ({
       const hasMaintenanceDebug = (mkor as any)._debug && (mkor as any)._debug.maintenanceSegments;
       const isMaintenanceMkorByDebug = hasMaintenanceDebug;
       
-      if ((isMaintenanceMkor || isMaintenanceMkorByDebug) && segments.length > 0) {
-        // Для ТОИР используем только этап maintenance
-        const result = [];
-        let currentDate = parseISO(startDate);
-        
-        segments.forEach((duration, index) => {
-          if (duration > 0) {
-            const endDate = new Date(currentDate);
-            endDate.setDate(endDate.getDate() + duration - 1);
-            endDate.setHours(23, 59, 59, 999);
-            
-            result.push({
+      if ((isMaintenanceMkor || isMaintenanceMkorByDebug)) {
+        // Если есть отладочные реальные даты ТОИР — используем их, чтобы не «склеивать» блоки
+        const debug = (mkor as any)._debug;
+        if (debug && Array.isArray(debug.maintenanceSegments) && debug.maintenanceSegments.length > 0) {
+          return debug.maintenanceSegments.map((ms: any) => {
+            // Поддерживаем как 'yyyy-MM-dd', так и 'dd.MM.yyyy'
+            const parseDate = (v: string) => {
+              if (!v) return null;
+              if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return new Date(v);
+              if (/^\d{2}\.\d{2}\.\d{4}$/.test(v)) {
+                const [d, m, y] = v.split('.');
+                return new Date(`${y}-${m}-${d}`);
+              }
+              const d = new Date(v);
+              return isNaN(d.getTime()) ? null : d;
+            };
+            const start = parseDate(ms.maintenanceStart) || parseISO(startDate);
+            const end = parseDate(ms.maintenanceEnd) || new Date(start);
+            end.setHours(23, 59, 59, 999);
+            const duration = ms.maintenanceDuration ?? Math.max(1, Math.round((end.getTime() - start.getTime()) / (24*60*60*1000)) + 1);
+            return {
               stage: 'maintenance',
-              start: new Date(currentDate),
-              end: endDate,
+              start,
+              end,
               duration,
               index: 5,
-            });
-            
-            currentDate = new Date(endDate);
-            currentDate.setDate(currentDate.getDate() + 1);
-            currentDate.setHours(0, 0, 0, 0);
-          }
-        });
+            };
+          });
+        }
+
+        // Fallback: если нет реальных дат, строим последовательно от mkor.start
+        if (segments.length > 0) {
+          const result = [] as any[];
+          let currentDate = parseISO(startDate);
+          segments.forEach((duration) => {
+            if (duration > 0) {
+              const endDate = new Date(currentDate);
+              endDate.setDate(endDate.getDate() + duration - 1);
+              endDate.setHours(23, 59, 59, 999);
+              result.push({
+                stage: 'maintenance',
+                start: new Date(currentDate),
+                end: endDate,
+                duration,
+                index: 5,
+              });
+              currentDate = new Date(endDate);
+              currentDate.setDate(currentDate.getDate() + 1);
+              currentDate.setHours(0, 0, 0, 0);
+            }
+          });
+          return result;
+        }
         
-        return result;
+        // Если нет ни реальных дат, ни segments - возвращаем пустой массив
+        return [];
       }
       
       // Для обычных МКОР - полный техцикл
@@ -499,16 +529,36 @@ const SortableMkorRow: React.FC<SortableMkorRowProps> = ({
                 )}
                 {/* Показываем заказчика во всех зеленых блоках 'working' */}
                 {content.stage === 'working' && mkor.jobs && mkor.jobs.length > 0 && (() => {
+                  // Ищем работу, чьи реальные даты этапа "Работа у заказчика" покрывают текущий день
                   const job = mkor.jobs.find(job => {
                     if (!job.start) return false;
-                    const segs = getMkorSegments(mkor, job.start);
-                    return segs.some(segment => {
-                      if (segment.stage !== 'working') return false;
-                      const start = new Date(segment.start);
-                      const end = new Date(segment.end);
-                      const dayDate = new Date(day);
-                      return dayDate >= start && dayDate < end;
-                    });
+                    // Получаем сегменты именно этой работы с реальными датами
+                    const jobSegments = getJobSegments(mkor, job);
+                    let currentDate = parseISO(job.start);
+                    const stages = ['transitToObject', 'unloading', 'working', 'loading', 'transitToMaintenance', 'maintenance'] as const;
+                    for (let i = 0; i < stages.length; i++) {
+                      const duration = jobSegments[i] || 0;
+                      if (duration <= 0) continue;
+                      const endDate = new Date(currentDate);
+                      endDate.setDate(endDate.getDate() + duration - 1);
+                      endDate.setHours(23, 59, 59, 999);
+                      if (stages[i] === 'working') {
+                        const dayDate = new Date(day);
+                        const start = new Date(currentDate);
+                        start.setHours(0,0,0,0);
+                        const end = new Date(endDate);
+                        end.setHours(0,0,0,0);
+                        if (dayDate >= start && dayDate <= end) {
+                          return true;
+                        }
+                      }
+                      // переход к следующему этапу
+                      const nextDay = new Date(endDate);
+                      nextDay.setDate(nextDay.getDate() + 1);
+                      nextDay.setHours(0, 0, 0, 0);
+                      currentDate = nextDay;
+                    }
+                    return false;
                   });
                   if (job && job.customer) {
                     const lastWord = job.customer.trim().split(' ').pop()?.replace(/[«»]/g, '');
@@ -666,7 +716,7 @@ export const MkorTimeline: React.FC<MkorTimelineProps> = ({
   // }
 
   return (
-    <Card className="bg-gradient-card border-border shadow-card overflow-hidden">
+    <Card className="bg-gradient-card border-border shadow-card overflow-visible">
       <div className="p-6">
         <div className="flex items-center gap-2 mb-4">
           <Calendar className="w-5 h-5 text-primary" />
@@ -678,8 +728,13 @@ export const MkorTimeline: React.FC<MkorTimelineProps> = ({
           </div>
         </div>
         
-        {/* Применяю scrollRef и onScroll к scrollable div */}
-        <div className="overflow-x-auto" ref={scrollRef} onScroll={onScroll}>
+        {/* Применяю scrollRef и onScroll к scrollable div; резервируем место под скроллбар */}
+        <div
+          className="overflow-x-auto pb-4"
+          ref={scrollRef}
+          onScroll={onScroll}
+          style={{ scrollbarGutter: 'stable', overflowY: 'hidden' }}
+        >
           <div className="min-w-max">
             {/* Заголовок с датами */}
             <div className="flex border-b border-border">

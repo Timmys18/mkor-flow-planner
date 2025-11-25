@@ -1,6 +1,6 @@
 // Типы данных МКОР на основе технических характеристик
 
-import { differenceInCalendarDays } from 'date-fns';
+import { differenceInCalendarDays, parseISO } from 'date-fns';
 
 export interface MkorSpecs {
   diameter: number;
@@ -259,8 +259,12 @@ export function getMkorStageOnDate(mkor: MkorUnit, date: Date, job?: MkorJob): {
   requiresTransport: boolean;
   progress?: number; // прогресс в рамках дня (0-1) для дробных этапов
 } | null {
-  const startDate = new Date(mkor.start);
-  const daysDiff = differenceInCalendarDays(date, startDate);
+  // Парсим дату начала строго как локальный календарный день, чтобы избежать смещения по часовым поясам
+  const startDate = typeof mkor.start === 'string' ? parseISO(mkor.start) : new Date(mkor.start);
+  startDate.setHours(0, 0, 0, 0);
+  const localDate = new Date(date);
+  localDate.setHours(0, 0, 0, 0);
+  const daysDiff = differenceInCalendarDays(localDate, startDate);
   
   if (daysDiff < 0) return null;
   

@@ -43,9 +43,11 @@ app.get('/api/mkor', async (req: Request, res: Response) => {
   const units = await prisma.mkorUnit.findMany({ include: { jobs: true } });
   const normalized = units.map(unit => ({
     ...unit,
-    segments: Array.isArray(unit.segments)
-      ? unit.segments
-      : JSON.parse(unit.segments)
+    // Гарантируем, что фронт получает start (если работ нет, используем availableFrom)
+    start: (unit as any).start ?? unit.availableFrom,
+    segments: Array.isArray((unit as any).segments)
+      ? (unit as any).segments
+      : JSON.parse(unit.segments as unknown as string)
   }));
   res.json(normalized);
 });

@@ -11,6 +11,9 @@ import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover
 import { Calendar } from '@/components/ui/calendar';
 import { cn } from '@/lib/utils';
 import { Calendar as CalendarIcon } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { FileSpreadsheet } from 'lucide-react';
+import * as XLSX from 'xlsx';
 
 const Index = () => {
   const today = new Date();
@@ -163,6 +166,91 @@ const Index = () => {
 
   const [startPopoverOpen, setStartPopoverOpen] = useState(false);
   const [endPopoverOpen, setEndPopoverOpen] = useState(false);
+
+  const handleCreateReport = () => {
+    try {
+      // Собираем данные по арендным работам из выбранного периода
+      const reportData: any[] = [];
+      const reportStart = new Date(startDate);
+      const reportEnd = new Date(endDate);
+      
+      mkorUnits.forEach(mkor => {
+        if (!mkor.jobs || mkor.jobs.length === 0) return;
+        
+        mkor.jobs.forEach(job => {
+          if (!job.start) return;
+          
+          // Получаем сегменты работы (с учетом кастомных этапов)
+          let segments = [];
+          if (job.customStages && job.customSegments) {
+            try {
+              segments = Array.isArray(job.customSegments) 
+                ? job.customSegments 
+                : JSON.parse(job.customSegments);
+            } catch {
+              segments = Array.isArray(mkor.segments) ? mkor.segments : JSON.parse(mkor.segments);
+            }
+          } else {
+            segments = Array.isArray(mkor.segments) ? mkor.segments : JSON.parse(mkor.segments);
+          }
+          
+          // Вычисляем даты начала и окончания аренды
+          const jobStartDate = new Date(job.start);
+          let currentDate = new Date(jobStartDate);
+          
+          // Переходим к этапу разгрузки (начало аренды)
+          const transitToObjectDuration = segments[0] || 0;
+          if (transitToObjectDuration > 0) {
+            currentDate = new Date(currentDate.getTime() + transitToObjectDuration * 24 * 60 * 60 * 1000);
+          }
+          
+          const rentalStartDate = new Date(currentDate);
+          
+          // Вычисляем конец аренды (после этапа погрузки)
+          // Используем правильную логику: добавляем длительность минус 1 день
+          const unloadingDuration = segments[1] || 0;
+          const workingDuration = segments[2] || 0;
+          const loadingDuration = segments[3] || 0;
+          
+          const totalRentalDuration = unloadingDuration + workingDuration + loadingDuration;
+          // Вычитаем 1 день, так как этап заканчивается в последний день, а не в следующий
+          const rentalEndDate = new Date(rentalStartDate.getTime() + (totalRentalDuration - 1) * 24 * 60 * 60 * 1000);
+          
+          // Проверяем, пересекается ли аренда с выбранным периодом
+          if (rentalStartDate <= reportEnd && rentalEndDate >= reportStart) {
+            reportData.push({
+              'Заказчик': job.customer || 'Не указан',
+              'ЛПУ': job.lpu || 'Не указано',
+              'Наименование МКОР': mkor.name,
+              'Дата начала аренды': format(rentalStartDate, 'dd.MM.yyyy'),
+              'Дата окончания аренды': format(rentalEndDate, 'dd.MM.yyyy')
+            });
+          }
+        });
+      });
+      
+      if (reportData.length === 0) {
+        alert('Нет данных для экспорта в выбранном периоде');
+        return;
+      }
+      
+      // Создаем Excel файл используя правильный API
+      const worksheet = XLSX.utils.json_to_sheet(reportData);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Отчет по аренде');
+      
+      // Генерируем имя файла с датами
+      const reportFileName = `Отчет_аренда_${format(new Date(startDate), 'dd.MM.yyyy')}-${format(new Date(endDate), 'dd.MM.yyyy')}.xlsx`;
+      
+      // Скачиваем файл
+      XLSX.writeFile(workbook, reportFileName);
+      
+    } catch (error) {
+      console.error('Ошибка при создании отчета:', error);
+      alert('Ошибка при создании отчета. Проверьте консоль для деталей.');
+    }
+  };
+
   return (
     <div className="min-h-screen bg-background">
       <div className="container mx-auto p-6">
@@ -225,24 +313,44 @@ const Index = () => {
             <TabsTrigger value="inventory" className="text-xl h-14 font-bold tracking-wide flex items-center justify-center data-[state=active]:bg-gradient-to-r data-[state=active]:from-blue-400 data-[state=active]:to-slate-700 data-[state=active]:text-white data-[state=active]:shadow-xl">Имеющиеся МКОР</TabsTrigger>
             <TabsTrigger value="reports" className="text-xl h-14 font-bold tracking-wide flex items-center justify-center data-[state=active]:bg-gradient-to-r data-[state=active]:from-blue-400 data-[state=active]:to-slate-700 data-[state=active]:text-white data-[state=active]:shadow-xl">Отчёты</TabsTrigger>
           </TabsList>
-          <TabsContent value="planner" className="space-y-6">
-            <MkorTimeline
-              startDate={startDate}
-              endDate={endDate}
-              mkorUnits={mkorUnits}
-              onMkorUnitsChange={handleMkorUnitsChange}
-              scrollRef={mkorTimelineScrollRef}
-              onScroll={handleMkorScroll}
-              mode="full"
-            />
-            <TransportChart
-              startDate={startDate}
-              endDate={endDate}
-              mkorUnits={mkorUnits}
-              fleetSupplies={fleetSupplies}
-              scrollRef={transportChartScrollRef}
-            />
-          </TabsContent>
+                      <TabsContent value="planner" className="space-y-6">
+              {/* Визуальный планировщик */}
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-semibold">Временная шкала МКОР</h3>
+                  <div className="flex items-center gap-2">
+                    <Button 
+                      onClick={handleCreateReport}
+                      variant="outline"
+                      size="sm"
+                      className="flex items-center gap-2 bg-primary text-primary-foreground hover:bg-primary/90"
+                    >
+                      <FileSpreadsheet className="w-4 h-4" />
+                      Создать отчет
+                    </Button>
+                    <span className="text-sm text-muted-foreground">
+                      Перетащите для изменения порядка и времени
+                    </span>
+                  </div>
+                </div>
+                <MkorTimeline
+                  startDate={startDate}
+                  endDate={endDate}
+                  mkorUnits={mkorUnits.filter(u => u.jobs && u.jobs.length > 0)}
+                  onMkorUnitsChange={handleMkorUnitsChange}
+                  scrollRef={mkorTimelineScrollRef}
+                  onScroll={handleMkorScroll}
+                  mode="full"
+                />
+                <TransportChart
+                  startDate={startDate}
+                  endDate={endDate}
+                  mkorUnits={mkorUnits.filter(u => u.jobs && u.jobs.length > 0)}
+                  fleetSupplies={fleetSupplies}
+                  scrollRef={transportChartScrollRef}
+                />
+              </div>
+            </TabsContent>
           <TabsContent value="inventory">
             <MkorInventoryTab
               inventory={inventory}
