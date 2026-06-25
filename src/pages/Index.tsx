@@ -6,7 +6,7 @@ import { TransportChart } from '@/components/TransportChart';
 import { MkorInventoryTab } from '@/components/MkorInventoryTab';
 import { Reports } from '@/pages/Reports';
 import { format, addDays } from 'date-fns';
-import { MkorUnit, MkorInventory, createMkorUnit } from '@/types/mkor';
+import { MkorUnit, MkorInventory, createMkorUnit, getProjectBoundsFromUnits, parseCalendarDate } from '@/types/mkor';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 import { Calendar } from '@/components/ui/calendar';
 import { cn } from '@/lib/utils';
@@ -74,59 +74,19 @@ const Index = () => {
   }, [startDate, endDate]);
   // --- END LocalStorage ---
 
-  // Автоматическое обновление границ планировщика на основе реальных дат работ
+  // Автоматическое расширение границ, если работа выходит за текущий диапазон
   useEffect(() => {
-    if (mkorUnits.length > 0) {
-      let earliestStart = new Date();
-      let latestEnd = new Date();
-      
-      mkorUnits.forEach(mkor => {
-        if (mkor.jobs && mkor.jobs.length > 0) {
-          const jobStart = new Date(mkor.jobs[0].start);
-          if (jobStart < earliestStart) {
-            earliestStart = jobStart;
-          }
-          
-          // Вычисляем дату окончания работы с учётом дробных этапов
-          let segments = [];
-          if (mkor.jobs[0].customStages && mkor.jobs[0].customSegments) {
-            try {
-              segments = Array.isArray(mkor.jobs[0].customSegments) 
-                ? mkor.jobs[0].customSegments 
-                : JSON.parse(mkor.jobs[0].customSegments);
-            } catch {
-              segments = mkor.segments;
-            }
-          } else {
-            segments = mkor.segments;
-          }
-          
-          // Точный расчёт даты окончания по миллисекундам
-          let currentDate = new Date(jobStart);
-          segments.forEach(duration => {
-            if (duration > 0) {
-              const durationMs = duration * 24 * 60 * 60 * 1000;
-              currentDate = new Date(currentDate.getTime() + durationMs);
-            }
-          });
-          
-          const jobEnd = currentDate;
-          
-          if (jobEnd > latestEnd) {
-            latestEnd = jobEnd;
-          }
-        }
-      });
-      
-      // Обновляем границы только если они существенно отличаются
-      const currentStart = new Date(startDate);
-      const currentEnd = new Date(endDate);
-      
-      if (earliestStart < currentStart || latestEnd > currentEnd) {
-        setStartDate(format(earliestStart, 'yyyy-MM-dd'));
-        setEndDate(format(latestEnd, 'yyyy-MM-dd'));
-      }
-    }
+    const bounds = getProjectBoundsFromUnits(mkorUnits);
+    if (!bounds) return;
+
+    setStartDate((prev) => {
+      const current = parseCalendarDate(prev);
+      return bounds.start < current ? format(bounds.start, 'yyyy-MM-dd') : prev;
+    });
+    setEndDate((prev) => {
+      const current = parseCalendarDate(prev);
+      return bounds.end > current ? format(bounds.end, 'yyyy-MM-dd') : prev;
+    });
   }, [mkorUnits]);
 
   const handleDateChange = (newStartDate: string, newEndDate: string) => {

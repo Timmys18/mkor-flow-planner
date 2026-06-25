@@ -366,6 +366,37 @@ export function getJobStageOnDate(
   return null;
 }
 
+/** Диапазон дат одной работы (от начала до конца последнего этапа) */
+export function getJobDateRange(
+  mkor: MkorUnit,
+  job: MkorJob,
+): { start: Date; end: Date } | null {
+  const segments = buildJobSegmentsWithDates(mkor, job);
+  if (segments.length === 0) return null;
+  return {
+    start: parseCalendarDate(segments[0].start),
+    end: parseCalendarDate(segments[segments.length - 1].end),
+  };
+}
+
+/** Минимальные границы проекта по всем работам всех МКОР */
+export function getProjectBoundsFromUnits(units: MkorUnit[]): { start: Date; end: Date } | null {
+  let earliest: Date | null = null;
+  let latest: Date | null = null;
+
+  for (const mkor of units) {
+    for (const job of mkor.jobs ?? []) {
+      const range = getJobDateRange(mkor, job);
+      if (!range) continue;
+      if (!earliest || range.start < earliest) earliest = range.start;
+      if (!latest || range.end > latest) latest = range.end;
+    }
+  }
+
+  if (!earliest || !latest) return null;
+  return { start: earliest, end: latest };
+}
+
 // Функция для определения этапа МКОР на конкретную дату
 export function getMkorStageOnDate(mkor: MkorUnit, date: Date, job?: MkorJob): {
   stage: keyof typeof STAGE_NAMES;
