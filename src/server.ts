@@ -1,31 +1,37 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
+import path from 'path';
+import fs from 'fs';
 import { PrismaClient } from '@prisma/client';
 import { YandexMapsService, CoordinateUtils } from './services/yandexMaps';
 import dotenv from 'dotenv';
 
-// Загружаем переменные окружения
 dotenv.config();
 
-// Устанавливаем переменные окружения напрямую, если они не загрузились
-if (!process.env.DATABASE_URL) {
-  process.env.DATABASE_URL = 'file:./dev.db';
-}
-    if (!process.env.GRAPHHOPPER_API_KEY) {
-      process.env.GRAPHHOPPER_API_KEY = 'demo';
-    }
+const isProduction = process.env.NODE_ENV === 'production';
 
-// Отладочная информация
-console.log('Переменные окружения:');
-console.log('OSRM API: УСТАНОВЛЕН (не требует ключа)');
-console.log('DATABASE_URL:', process.env.DATABASE_URL ? 'УСТАНОВЛЕН' : 'НЕ УСТАНОВЛЕН');
+if (!process.env.DATABASE_URL) {
+  process.env.DATABASE_URL = isProduction
+    ? 'file:./prisma/production.db'
+    : 'file:./dev.db';
+}
+if (!process.env.GRAPHHOPPER_API_KEY) {
+  process.env.GRAPHHOPPER_API_KEY = 'demo';
+}
+
+console.log('Environment:', {
+  nodeEnv: process.env.NODE_ENV ?? 'development',
+  databaseUrl: process.env.DATABASE_URL ? 'set' : 'missing',
+});
 
 const prisma = new PrismaClient();
 const app = express();
-const port = 4000;
+const port = Number(process.env.PORT) || 4000;
 
-app.use(cors());
+if (!isProduction) {
+  app.use(cors());
+}
 app.use(bodyParser.json());
 
 // Инициализация сервиса Яндекс Карт
@@ -454,6 +460,18 @@ app.get('/api/lpus/with-coordinates', async (req, res) => {
   }
 });
 
-app.listen(port, () => {
-  console.log(`Prisma API server running on http://localhost:${port}`);
+app.get('/health', (_req, res) => {
+  res.json({ ok: true });
+});
+
+const distPath = path.join(process.cwd(), 'dist');
+if (isProduction && fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+  app.get(/^(?!\/api).*/, (_req, res) => {
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+}
+
+app.listen(port, '0.0.0.0', () => {
+  console.log(`MKOR planner running on http://0.0.0.0:${port}`);
 }); 

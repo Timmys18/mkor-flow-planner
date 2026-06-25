@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: mkor-flow-planner
+    runtime: node
+    plan: free
+    region: frankfurt
+    branch: main
+    buildCommand: npm install && npm run deploy:prepare
+    startCommand: NODE_ENV=production npm run start:prod
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        value: file:./prisma/production.db
+      - key: GRAPHHOPPER_API_KEY
+        value: demo
