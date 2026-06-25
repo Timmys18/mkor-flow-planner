@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
-import { MkorUnit, getJobSegments, MKOR_SPECS } from '@/types/mkor';
+import { MkorUnit, getJobSegments, MKOR_SPECS, buildJobSegmentsWithDates, getCalendarSpanDays } from '@/types/mkor';
 import { format, parseISO, differenceInDays, isAfter, isBefore } from 'date-fns';
 import { ru } from 'date-fns/locale';
 
@@ -57,42 +57,20 @@ const UtilizationChart: React.FC<UtilizationChartProps> = ({
         // Если есть работы, считаем по ним
         if (mkor.jobs && mkor.jobs.length > 0) {
           mkor.jobs.forEach(job => {
-            if (!job.start) return; // Пропускаем работы без даты начала
-            
-            const jobStart = parseISO(job.start);
-            const jobSegments = getJobSegments(mkor, job);
-            
-            let currentDate = jobStart;
-            let segmentIndex = 0;
-            
-            jobSegments.forEach(segmentDuration => {
-              if (!segmentDuration || segmentDuration <= 0) return;
-              
-              // Определяем этап по индексу (погрузка, разгрузка, работа у заказчика)
-              const stage = segmentIndex === 0 ? 'loading' : 
-                           segmentIndex === 1 ? 'unloading' : 
-                           segmentIndex === 2 ? 'working' : 'other';
-              
-              const segmentEnd = new Date(currentDate);
-              segmentEnd.setDate(segmentEnd.getDate() + segmentDuration - 1);
-              
-              // Учитываем только дни в пределах проекта
-              const actualStart = isAfter(currentDate, effectiveStartDate) ? currentDate : effectiveStartDate;
-              const actualEnd = isBefore(segmentEnd, projectEnd) ? segmentEnd : projectEnd;
-              
+            if (!job.start) return;
+
+            buildJobSegmentsWithDates(mkor, job).forEach((segment) => {
+              const actualStart = isAfter(segment.start, effectiveStartDate) ? segment.start : effectiveStartDate;
+              const actualEnd = isBefore(segment.end, projectEnd) ? segment.end : projectEnd;
+
               if (isBefore(actualStart, actualEnd) || actualStart.getTime() === actualEnd.getTime()) {
                 const daysInSegment = differenceInDays(actualEnd, actualStart) + 1;
                 totalWorkingDays += daysInSegment;
-                
-                // Учитываем дни аренды (погрузка, разгрузка, работа)
-                if (['loading', 'unloading', 'working'].includes(stage)) {
+
+                if (['unloading', 'working', 'loading'].includes(segment.stage)) {
                   totalRentalDays += daysInSegment;
                 }
               }
-              
-              currentDate = new Date(segmentEnd);
-              currentDate.setDate(currentDate.getDate() + 1);
-              segmentIndex++;
             });
           });
         } else {
@@ -113,9 +91,10 @@ const UtilizationChart: React.FC<UtilizationChartProps> = ({
             
             standardSegments.forEach((segmentDuration, index) => {
               if (!segmentDuration || segmentDuration <= 0) return;
-              
+
+              const calendarDays = getCalendarSpanDays(segmentDuration);
               const segmentEnd = new Date(currentDate);
-              segmentEnd.setDate(segmentEnd.getDate() + segmentDuration - 1);
+              segmentEnd.setDate(segmentEnd.getDate() + calendarDays - 1);
               
               // Учитываем только дни в пределах проекта
               const actualStart = isAfter(currentDate, effectiveStartDate) ? currentDate : effectiveStartDate;

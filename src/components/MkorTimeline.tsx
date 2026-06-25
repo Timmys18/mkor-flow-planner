@@ -1,30 +1,17 @@
 import React from 'react';
 import { Card } from '@/components/ui/card';
-import { format, eachDayOfInterval, parseISO, addDays, differenceInDays } from 'date-fns';
+import { format, eachDayOfInterval, parseISO, addDays, differenceInCalendarDays, isValid } from 'date-fns';
 import { ru } from 'date-fns/locale';
-import { 
-  DndContext, 
-  closestCenter, 
-  DragEndEvent,
-  DragStartEvent,
-  DragOverlay,
-  useSensor,
-  useSensors,
-  PointerSensor,
-  KeyboardSensor
-} from '@dnd-kit/core';
+import { Calendar, Clock } from 'lucide-react';
 import {
-  arrayMove,
-  SortableContext,
-  sortableKeyboardCoordinates,
-  verticalListSortingStrategy,
-  useSortable
-} from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
-import { GripVertical, Calendar, Clock, Edit, AlertTriangle } from 'lucide-react';
-import { MkorEditDialog } from './MkorEditDialog';
-import { MkorUnit, STAGE_COLORS, STAGE_NAMES, MKOR_SPECS, isMkorAvailable, getJobSegments } from '@/types/mkor';
-import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip';
+  MkorUnit,
+  MKOR_SPECS,
+  getJobSegments,
+  getJobStageOnDate,
+  buildJobSegmentsWithDates,
+  getCalendarSpanDays,
+  parseCalendarDate,
+} from '@/types/mkor';
 
 interface MkorTimelineProps {
   startDate: string;
@@ -33,7 +20,9 @@ interface MkorTimelineProps {
   onMkorUnitsChange: (units: MkorUnit[]) => void;
   scrollRef?: React.RefObject<HTMLDivElement>;
   onScroll?: React.UIEventHandler<HTMLDivElement>;
-  mode?: 'full' | 'rental'; // новый проп
+  mode?: 'full' | 'rental';
+  /** Разрешить изменение длительности этапов (только главный планировщик) */
+  interactive?: boolean;
 }
 
 // Названия этапов для отображения в интерфейсе
@@ -55,39 +44,21 @@ const STAGE_DISPLAY_COLORS = {
   maintenance: 'bg-repair'
 };
 
-interface SortableMkorRowProps {
+interface MkorRowProps {
   mkor: MkorUnit;
   days: Date[];
-  onSegmentDrag: (mkorId: string, segmentIndex: number, newDuration: number) => void;
-  onMkorDrag: (mkorId: string, newStartDate: string) => void;
-  onMkorEdit: (updatedMkor: MkorUnit) => void;
-  onMkorDelete: (mkorId: string) => void;
-  mode?: 'full' | 'rental'; // добавлено
+  onSegmentResize: (mkorId: string, jobId: string, segmentIndex: number, newDuration: number) => void;
+  mode?: 'full' | 'rental';
+  interactive?: boolean;
 }
 
-const SortableMkorRow: React.FC<SortableMkorRowProps> = ({ 
-  mkor, 
-  days, 
-  onSegmentDrag, 
-  onMkorDrag,
-  onMkorEdit,
-  onMkorDelete,
-  mode = 'full' // добавлено
+const MkorRow: React.FC<MkorRowProps> = ({
+  mkor,
+  days,
+  onSegmentResize,
+  mode = 'full',
+  interactive = false,
 }) => {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: mkor.id });
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-  };
-
   const getMkorSegments = (mkor: MkorUnit, startDate: string) => {
     let segments: any[] = [];
     
@@ -95,29 +66,16 @@ const SortableMkorRow: React.FC<SortableMkorRowProps> = ({
     if (mode === 'rental') {
       // Если у МКОР есть работы, собираем сегменты аренды со всех работ
       if (mkor.jobs && mkor.jobs.length > 0) {
-        let allRentalSegments: any[] = [];
         for (const job of mkor.jobs) {
-          const jobSegments = getJobSegments(mkor, job);
-          let currentDate = parseISO(job.start);
-          const rentalStages = ['unloading', 'working', 'loading'] as const;
-          jobSegments.forEach((duration, index) => {
-            if (duration > 0 && index >= 1 && index <= 3) {
-              const stage = rentalStages[index - 1];
-              const endDate = new Date(currentDate);
-              endDate.setDate(endDate.getDate() + duration - 1);
-              endDate.setHours(23, 59, 59, 999);
+          buildJobSegmentsWithDates(mkor, job).forEach((segment) => {
+            if (['unloading', 'working', 'loading'].includes(segment.stage)) {
               allRentalSegments.push({
-                stage,
-                start: new Date(currentDate),
-                end: endDate,
-                duration,
-                index
+                stage: segment.stage,
+                start: segment.start,
+                end: segment.end,
+                duration: segment.duration,
+                index: segment.index,
               });
-              currentDate = new Date(endDate);
-              currentDate.setDate(currentDate.getDate() + 1);
-              currentDate.setHours(0, 0, 0, 0);
-            } else if (duration > 0) {
-              currentDate = addDays(currentDate, duration);
             }
           });
         }
@@ -152,10 +110,10 @@ const SortableMkorRow: React.FC<SortableMkorRowProps> = ({
         
         mkor.segments.forEach((duration, index) => {
           if (duration > 0) {
-            const stageIndex = index % 3; // Циклически перебираем этапы аренды
+            const stageIndex = index % 3;
             const stage = rentalStages[stageIndex];
-            const endDate = new Date(currentDate);
-            endDate.setDate(endDate.getDate() + duration - 1);
+            const calendarDays = getCalendarSpanDays(duration);
+            const endDate = addDays(currentDate, calendarDays - 1);
             endDate.setHours(23, 59, 59, 999);
             
             result.push({
@@ -236,11 +194,11 @@ const SortableMkorRow: React.FC<SortableMkorRowProps> = ({
         // Fallback: если нет реальных дат, строим последовательно от mkor.start
         if (segments.length > 0) {
           const result = [] as any[];
-          let currentDate = parseISO(startDate);
+          let currentDate = parseCalendarDate(startDate);
           segments.forEach((duration) => {
             if (duration > 0) {
-              const endDate = new Date(currentDate);
-              endDate.setDate(endDate.getDate() + duration - 1);
+              const calendarDays = getCalendarSpanDays(duration);
+              const endDate = addDays(currentDate, calendarDays - 1);
               endDate.setHours(23, 59, 59, 999);
               result.push({
                 stage: 'maintenance',
@@ -295,135 +253,50 @@ const SortableMkorRow: React.FC<SortableMkorRowProps> = ({
   };
 
   const getDayContent = (day: Date) => {
-    // Проверяем все работы МКОР, а не только первую
     const allJobs = mkor.jobs || [];
-    const dayDate = new Date(day);
-    dayDate.setHours(0, 0, 0, 0); // Обнуляем время для точного сравнения дат
-    
-    // Проверяем каждую работу
-    for (const job of allJobs) {
-      if (!job.start) continue;
-      
-      // Используем getJobSegments для получения сегментов конкретной работы
-      const jobSegments = getJobSegments(mkor, job);
-      let currentDate = parseISO(job.start);
-      const stages = ['transitToObject', 'unloading', 'working', 'loading', 'transitToMaintenance', 'maintenance'] as const;
-      
-      // Создаем сегменты с датами для этой конкретной работы
-      const segments = jobSegments.map((duration, index) => {
-        if (duration > 0) {
-          const stage = stages[index];
-          const endDate = addDays(currentDate, duration - 1);
-          endDate.setHours(23, 59, 59, 999);
-          
-          const segment = {
-            stage,
-            start: new Date(currentDate),
-            end: endDate,
-            duration,
-            index
-          };
-          
-          currentDate = addDays(endDate, 1);
-          currentDate.setHours(0, 0, 0, 0);
-          
-          return segment;
-        }
-        return null;
-      }).filter(Boolean);
-      
-      // Отладка для аренды
-      if (!mkor.jobs || mkor.jobs.length === 0) {
-        console.log(`Checking day ${dayDate.toDateString()} for rental MKOR ${mkor.name}:`, {
-          segmentsCount: segments.length,
-          segments: segments.map(s => ({
-            stage: s.stage,
-            start: s.start.toDateString(),
-            end: s.end.toDateString(),
-            duration: s.duration
-          }))
-        });
-      }
-      
-      // Ищем этап, который покрывает этот день
-      for (let i = 0; i < segments.length; i++) {
-        const segment = segments[i];
-        const startDate = new Date(segment.start);
-        const endDate = new Date(segment.end);
-        startDate.setHours(0, 0, 0, 0); // Обнуляем время
-        endDate.setHours(0, 0, 0, 0); // Обнуляем время
-        
-        // Проверяем, попадает ли день в этот этап (сравниваем только даты)
-        // Since endDate is now set to the end of the last day, we use <= for comparison
-        if (dayDate >= startDate && dayDate <= endDate) {
-          // Отладка: выводим информацию о совпадении
-          if (i === 0) { // только для первого этапа
-            console.log(`Job start match: ${mkor.name}`, {
-              jobStart: job.start,
-              dayDate: dayDate.toDateString(),
-              startDate: startDate.toDateString(),
-              endDate: endDate.toDateString(),
-              matches: dayDate >= startDate && dayDate <= endDate
-            });
-          }
-          // Вычисляем позицию дня относительно начала этапа
-          const dayPosition = differenceInDays(dayDate, startDate);
-          const isFirst = dayPosition === 0;
-          
-          // Определяем, является ли это последним днем этапа
-          // Since endDate is now set to the end of the last day, we can simply compare dates
-          const isLastDayOfSegment = dayDate.getTime() === endDate.getTime();
-          
+    const dayDate = parseCalendarDate(day);
 
-          
+    if (mode === 'full' && allJobs.length > 0) {
+      for (const job of allJobs) {
+        if (!job.start) continue;
+        const stageInfo = getJobStageOnDate(mkor, job, dayDate);
+        if (stageInfo) {
           return {
-            stage: segment.stage,
-            color: STAGE_DISPLAY_COLORS[segment.stage],
-            name: STAGE_DISPLAY_NAMES[segment.stage],
-            segmentIndex: segment.index,
-            isFirst,
-            isLast: isLastDayOfSegment,
-            dayPosition,
-            totalDuration: segment.duration,
+            stage: stageInfo.stage,
+            color: STAGE_DISPLAY_COLORS[stageInfo.stage],
+            name: STAGE_DISPLAY_NAMES[stageInfo.stage],
+            segmentIndex: stageInfo.segmentIndex,
+            jobId: job.id,
+            isFirst: stageInfo.isFirst,
+            isLast: stageInfo.isLast,
+            dayPosition: stageInfo.dayPosition,
+            totalDuration: stageInfo.duration,
           };
         }
       }
+      return null;
     }
-    
-    // Если нет работ, используем стандартные сегменты
-    if (allJobs.length === 0) {
-      const startDate = mkor.start;
-      if (!startDate) {
-        console.warn('No start date found for MKOR:', mkor.name);
-        return null;
-      }
+
+    // rental / maintenance / mkor без jobs
+    const rowStartDate = mkor.start;
+    if (rowStartDate) {
+      const segments = getMkorSegments(mkor, rowStartDate);
       
-      const segments = getMkorSegments(mkor, startDate);
-      
-      // Ищем этап, который покрывает этот день
       for (let i = 0; i < segments.length; i++) {
         const segment = segments[i];
-        const startDate = new Date(segment.start);
-        const endDate = new Date(segment.end);
-        startDate.setHours(0, 0, 0, 0); // Обнуляем время
-        endDate.setHours(0, 0, 0, 0); // Обнуляем время
+        const segmentStart = parseCalendarDate(segment.start);
+        const segmentEnd = parseCalendarDate(segment.end);
         
-        // Проверяем, попадает ли день в этот этап (сравниваем только даты)
-        if (dayDate >= startDate && dayDate <= endDate) {
-          // Вычисляем позицию дня относительно начала этапа
-          const dayPosition = differenceInDays(dayDate, startDate);
-          const isFirst = dayPosition === 0;
-          
-          // Определяем, является ли это последним днем этапа
-          const isLastDayOfSegment = dayDate.getTime() === endDate.getTime();
+        if (dayDate >= segmentStart && dayDate <= segmentEnd) {
+          const dayPosition = differenceInCalendarDays(dayDate, segmentStart);
           
           return {
             stage: segment.stage,
             color: STAGE_DISPLAY_COLORS[segment.stage],
             name: STAGE_DISPLAY_NAMES[segment.stage],
             segmentIndex: segment.index,
-            isFirst,
-            isLast: isLastDayOfSegment,
+            isFirst: dayPosition === 0,
+            isLast: dayDate.getTime() === segmentEnd.getTime(),
             dayPosition,
             totalDuration: segment.duration,
           };
@@ -432,12 +305,6 @@ const SortableMkorRow: React.FC<SortableMkorRowProps> = ({
     }
     
     return null;
-  };
-
-  const handleTimelineDrop = (e: React.DragEvent, dayIndex: number) => {
-    e.preventDefault();
-    const newStartDate = format(days[dayIndex], 'yyyy-MM-dd');
-    onMkorDrag(mkor.id, newStartDate);
   };
 
   const totalDays = (() => {
@@ -468,23 +335,10 @@ const SortableMkorRow: React.FC<SortableMkorRowProps> = ({
     }
     return Array.isArray(segArr) ? segArr.reduce((sum, segment) => sum + segment, 0) : 0;
   })();
-  const isAvailable = isMkorAvailable(mkor, format(new Date(), 'yyyy-MM-dd'));
-  const specs = MKOR_SPECS[mkor.diameter];
 
   return (
-    <div
-      ref={setNodeRef}
-      style={style}
-      className={`flex border-b border-border last:border-b-0 ${isDragging ? 'opacity-50' : ''}`}
-    >
-      <div className="w-40 p-3 bg-secondary/30 font-medium text-foreground sticky left-0 z-10 flex items-center gap-2" style={{minWidth: '10rem', maxWidth: '12rem'}}>
-        <button
-          {...attributes}
-          {...listeners}
-          className="text-muted-foreground hover:text-foreground transition-colors cursor-grab active:cursor-grabbing"
-        >
-          <GripVertical className="w-4 h-4" />
-        </button>
+    <div className="flex border-b border-border last:border-b-0">
+      <div className="w-40 p-3 bg-secondary/30 font-medium text-foreground sticky left-0 z-10 flex items-center gap-2" style={{ minWidth: '10rem', maxWidth: '12rem' }}>
         <div className="flex-1">
           <div className="text-sm flex items-center gap-1 text-foreground font-medium">
             {mkor.name}
@@ -503,18 +357,11 @@ const SortableMkorRow: React.FC<SortableMkorRowProps> = ({
           <div 
             key={day.toISOString()} 
             className="w-24 h-16 border-l border-border first:border-l-0 relative"
-            onDrop={(e) => handleTimelineDrop(e, dayIndex)}
-            onDragOver={(e) => e.preventDefault()}
           >
             {content && (
               <div 
-                className="h-full transition-all flex flex-col items-center justify-center group relative cursor-pointer"
+                className="h-full transition-all flex flex-col items-center justify-center group relative"
                 title={`${content.name} - День ${(content.dayPosition || 0) + 1}/${Math.ceil(content.totalDuration || 0)}`}
-                draggable
-                onDragStart={(e) => {
-                  e.dataTransfer.setData('mkorId', mkor.id);
-                  e.dataTransfer.setData('segmentIndex', content.segmentIndex.toString());
-                }}
               >
                 {/* Основной фон ячейки */}
                 <div className={`absolute inset-0 ${content.color} opacity-80 hover:opacity-100 transition-colors`}></div>
@@ -529,37 +376,12 @@ const SortableMkorRow: React.FC<SortableMkorRowProps> = ({
                 )}
                 {/* Показываем заказчика во всех зеленых блоках 'working' */}
                 {content.stage === 'working' && mkor.jobs && mkor.jobs.length > 0 && (() => {
-                  // Ищем работу, чьи реальные даты этапа "Работа у заказчика" покрывают текущий день
-                  const job = mkor.jobs.find(job => {
-                    if (!job.start) return false;
-                    // Получаем сегменты именно этой работы с реальными датами
-                    const jobSegments = getJobSegments(mkor, job);
-                    let currentDate = parseISO(job.start);
-                    const stages = ['transitToObject', 'unloading', 'working', 'loading', 'transitToMaintenance', 'maintenance'] as const;
-                    for (let i = 0; i < stages.length; i++) {
-                      const duration = jobSegments[i] || 0;
-                      if (duration <= 0) continue;
-                      const endDate = new Date(currentDate);
-                      endDate.setDate(endDate.getDate() + duration - 1);
-                      endDate.setHours(23, 59, 59, 999);
-                      if (stages[i] === 'working') {
-                        const dayDate = new Date(day);
-                        const start = new Date(currentDate);
-                        start.setHours(0,0,0,0);
-                        const end = new Date(endDate);
-                        end.setHours(0,0,0,0);
-                        if (dayDate >= start && dayDate <= end) {
-                          return true;
-                        }
-                      }
-                      // переход к следующему этапу
-                      const nextDay = new Date(endDate);
-                      nextDay.setDate(nextDay.getDate() + 1);
-                      nextDay.setHours(0, 0, 0, 0);
-                      currentDate = nextDay;
-                    }
-                    return false;
-                  });
+                  const job = content.jobId
+                    ? mkor.jobs.find((item) => item.id === content.jobId)
+                    : mkor.jobs.find((item) => {
+                        if (!item.start) return false;
+                        return getJobStageOnDate(mkor, item, day)?.stage === 'working';
+                      });
                   if (job && job.customer) {
                     const lastWord = job.customer.trim().split(' ').pop()?.replace(/[«»]/g, '');
                     return (<div className="text-[10px] text-white/80 mt-1">{lastWord}</div>);
@@ -569,29 +391,26 @@ const SortableMkorRow: React.FC<SortableMkorRowProps> = ({
                   }
                   return null;
                 })()}
-                {content.isLast && (
-                  <div className="absolute top-1 right-1 w-2 h-2 bg-white/30 rounded-full"></div>
-                )}
-                {/* Resize handle */}
-                {content.isLast && (
+                {interactive && content.isLast && content.jobId && (
                   <div 
                     className="absolute right-0 top-0 w-2 h-full bg-white/20 cursor-col-resize hover:bg-white/40 transition-colors"
                     onMouseDown={(e) => {
                       e.preventDefault();
                       const startX = e.clientX;
                       const startDuration = content.totalDuration || 0;
-                      const handleMouseMove = (e: MouseEvent) => {
-                        const deltaX = e.clientX - startX;
-                        const dayWidth = 96; // w-24 = 96px
+                      let pendingDuration = startDuration;
+                      const handleMouseMove = (moveEvent: MouseEvent) => {
+                        const deltaX = moveEvent.clientX - startX;
+                        const dayWidth = 96;
                         const deltaDays = Math.round(deltaX / dayWidth);
-                        const newDuration = Math.max(1, startDuration + deltaDays);
-                        if (newDuration !== startDuration) {
-                          onSegmentDrag(mkor.id, content.segmentIndex, newDuration);
-                        }
+                        pendingDuration = Math.max(0.5, startDuration + deltaDays);
                       };
                       const handleMouseUp = () => {
                         document.removeEventListener('mousemove', handleMouseMove);
                         document.removeEventListener('mouseup', handleMouseUp);
+                        if (pendingDuration !== startDuration) {
+                          onSegmentResize(mkor.id, content.jobId, content.segmentIndex, pendingDuration);
+                        }
                       };
                       document.addEventListener('mousemove', handleMouseMove);
                       document.addEventListener('mouseup', handleMouseUp);
@@ -626,94 +445,57 @@ export const MkorTimeline: React.FC<MkorTimelineProps> = ({
   onMkorUnitsChange,
   scrollRef,
   onScroll,
-  mode = 'full', // по умолчанию полный техцикл
+  mode = 'full',
+  interactive = false,
 }) => {
-  const [draggedItem, setDraggedItem] = React.useState<MkorUnit | null>(null);
-  
-  const sensors = useSensors(
-    useSensor(PointerSensor),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    })
-  );
+  const days = React.useMemo(() => {
+    const start = parseISO(startDate);
+    const end = parseISO(endDate);
+    if (!isValid(start) || !isValid(end) || start > end) {
+      return [];
+    }
+    try {
+      return eachDayOfInterval({ start, end }).map((day) => parseCalendarDate(day));
+    } catch {
+      return [];
+    }
+  }, [startDate, endDate]);
 
-  // Формируем массив дней для планировщика
-  // Используем стандартный интервал, но исправим логику отображения в getDayContent
-  const days = eachDayOfInterval({
-    start: parseISO(startDate),
-    end: parseISO(endDate),
-  });
-  
-  // Отладка: выводим информацию о датах
-  console.log('Timeline dates:', {
-    startDate,
-    endDate,
-    firstDay: days[0]?.toDateString(),
-    lastDay: days[days.length - 1]?.toDateString(),
-    totalDays: days.length
-  });
+  const handleSegmentResize = async (
+    mkorId: string,
+    jobId: string,
+    segmentIndex: number,
+    newDuration: number,
+  ) => {
+    if (!interactive) return;
 
-  const handleDragStart = (event: DragStartEvent) => {
-    const { active } = event;
-    const draggedMkor = mkorUnits.find(unit => unit.id === active.id);
-    setDraggedItem(draggedMkor || null);
-  };
+    const mkor = mkorUnits.find((unit) => unit.id === mkorId);
+    const job = mkor?.jobs?.find((item) => item.id === jobId);
+    if (!mkor || !job) return;
 
-  const handleDragEnd = (event: DragEndEvent) => {
-    const { active, over } = event;
-    setDraggedItem(null);
+    const segments = [...getJobSegments(mkor, job)];
+    segments[segmentIndex] = newDuration;
 
-    if (active.id !== over?.id) {
-      const oldIndex = mkorUnits.findIndex(unit => unit.id === active.id);
-      const newIndex = mkorUnits.findIndex(unit => unit.id === over?.id);
-      
-      const newUnits = arrayMove(mkorUnits, oldIndex, newIndex);
-      onMkorUnitsChange(newUnits);
+    try {
+      const response = await fetch(`/api/job/${job.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          start: job.start,
+          customer: job.customer,
+          lpu: job.lpu,
+          customStages: true,
+          customSegments: segments,
+        }),
+      });
+      if (!response.ok) throw new Error('Не удалось сохранить этап');
+      onMkorUnitsChange(mkorUnits);
+    } catch (error) {
+      console.error('Ошибка сохранения длительности этапа:', error);
     }
   };
 
-  const handleSegmentDrag = (mkorId: string, segmentIndex: number, newDuration: number) => {
-    const newUnits = mkorUnits.map(unit => {
-      if (unit.id === mkorId) {
-        const newSegments = [...unit.segments];
-        newSegments[segmentIndex] = newDuration;
-        return { ...unit, segments: newSegments };
-      }
-      return unit;
-    });
-    onMkorUnitsChange(newUnits);
-  };
-
-  const handleMkorEdit = (updatedMkor: MkorUnit) => {
-    const newUnits = mkorUnits.map(unit => 
-      unit.id === updatedMkor.id ? updatedMkor : unit
-    );
-    onMkorUnitsChange(newUnits);
-  };
-
-  const handleMkorDelete = (mkorId: string) => {
-    const newUnits = mkorUnits.filter(unit => unit.id !== mkorId);
-    onMkorUnitsChange(newUnits);
-  };
-
-  const handleMkorDrag = (mkorId: string, newStartDate: string) => {
-    const newUnits = mkorUnits.map(unit => {
-      if (unit.id === mkorId) {
-        return { ...unit, start: newStartDate };
-      }
-      return unit;
-    });
-    onMkorUnitsChange(newUnits);
-  };
-
-  // Для каждого МКОР с работами — одна строка, все работы отображаются на одной шкале
   const sortedUnits = sortMkorUnits(mkorUnits);
-  const expandedUnits = sortedUnits;
-
-  // Удаляю условие возврата пустого div. Всегда рендерю основной layout.
-  // if (expandedUnits.length === 0) {
-  //   return <div />;
-  // }
 
   return (
     <Card className="bg-gradient-card border-border shadow-card overflow-visible">
@@ -723,12 +505,8 @@ export const MkorTimeline: React.FC<MkorTimelineProps> = ({
           <h2 className="text-xl font-semibold text-foreground">
             Временная шкала МКОР
           </h2>
-          <div className="text-sm text-muted-foreground ml-auto">
-            Перетащите для изменения порядка и времени
-          </div>
         </div>
         
-        {/* Применяю scrollRef и onScroll к scrollable div; резервируем место под скроллбар */}
         <div
           className="overflow-x-auto pb-4"
           ref={scrollRef}
@@ -736,9 +514,8 @@ export const MkorTimeline: React.FC<MkorTimelineProps> = ({
           style={{ scrollbarGutter: 'stable', overflowY: 'hidden' }}
         >
           <div className="min-w-max">
-            {/* Заголовок с датами */}
             <div className="flex border-b border-border">
-            <div className="w-40 p-3 bg-secondary/50 font-medium text-foreground sticky left-0 z-10">
+              <div className="w-40 p-3 bg-secondary/50 font-medium text-foreground sticky left-0 z-10">
                 Установка
               </div>
               {days.map((day) => (
@@ -753,41 +530,16 @@ export const MkorTimeline: React.FC<MkorTimelineProps> = ({
               ))}
             </div>
             
-            {/* Строки МКОР с drag and drop */}
-            <DndContext
-              sensors={sensors}
-              collisionDetection={closestCenter}
-              onDragStart={handleDragStart}
-              onDragEnd={handleDragEnd}
-            >
-              <SortableContext items={expandedUnits.map(unit => unit.id)} strategy={verticalListSortingStrategy}>
-                {expandedUnits.length > 0 && expandedUnits.map((mkor) => (
-                  <SortableMkorRow
-                    key={mkor.id}
-                    mkor={mkor}
-                    days={days}
-                    onSegmentDrag={handleSegmentDrag}
-                    onMkorDrag={handleMkorDrag}
-                    onMkorEdit={handleMkorEdit}
-                    onMkorDelete={handleMkorDelete}
-                    mode={mode} // пробрасываем
-                  />
-                ))}
-              </SortableContext>
-              
-              <DragOverlay>
-                {draggedItem ? (
-                  <div className="bg-card border border-primary rounded p-2 shadow-elegant">
-                    <div className="font-medium text-foreground">{draggedItem.name}</div>
-                    <div className="text-xs text-muted-foreground">
-                      {draggedItem.segments.reduce((sum, segment) => sum + segment, 0)} дней
-                    </div>
-                  </div>
-                ) : null}
-              </DragOverlay>
-            </DndContext>
-            
-            {mkorUnits.length === 0 && (
+            {sortedUnits.length > 0 ? sortedUnits.map((mkor) => (
+              <MkorRow
+                key={mkor.id}
+                mkor={mkor}
+                days={days}
+                onSegmentResize={handleSegmentResize}
+                mode={mode}
+                interactive={interactive}
+              />
+            )) : (
               <div className="flex items-center justify-center py-12 text-muted-foreground">
                 <div className="text-center">
                   <div className="text-lg mb-2">Нет данных</div>
@@ -798,7 +550,6 @@ export const MkorTimeline: React.FC<MkorTimelineProps> = ({
           </div>
         </div>
         
-        {/* Легенда */}
         <div className="mt-6 flex items-center gap-6 flex-wrap">
           <span className="text-sm font-medium text-foreground">Этапы:</span>
           {Object.entries(STAGE_DISPLAY_COLORS).map(([stage, color]) => (
@@ -809,10 +560,6 @@ export const MkorTimeline: React.FC<MkorTimelineProps> = ({
               </span>
             </div>
           ))}
-          
-          <div className="ml-auto text-xs text-muted-foreground">
-            💡 Перетащите край сегмента для изменения длительности
-          </div>
         </div>
       </div>
     </Card>

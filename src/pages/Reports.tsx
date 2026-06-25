@@ -2,12 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Calendar, BarChart3, Truck, Wrench, Route, FileText } from 'lucide-react';
-import { format, parseISO, addDays } from 'date-fns';
+import { format, parseISO, addDays, isValid } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 import { Calendar as CalendarComponent } from '@/components/ui/calendar';
 import { cn } from '@/lib/utils';
-import { MkorUnit, MKOR_SPECS, getJobSegments, MkorJob } from '@/types/mkor';
+import { MkorUnit, MKOR_SPECS, getJobSegments, MkorJob, buildJobSegmentsWithDates } from '@/types/mkor';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ResponsiveContainer } from 'recharts';
 import { MkorTimeline } from '@/components/MkorTimeline';
@@ -140,31 +140,53 @@ const DateRangePicker: React.FC<{
 };
 
 // Функция для получения сегментов с датами для КОНКРЕТНОЙ работы
-const getMkorSegmentsWithDates = (mkor: MkorUnit, job: MkorJob) => {
-  if (!job || !job.start) return [];
-  const segments = getJobSegments(mkor, job);
-  const result: Array<{ stage: string; start: Date; end: Date; duration: number; index: number; }> = [];
-  let currentDate = parseISO(job.start);
-  const stages = ['transitToObject', 'unloading', 'working', 'loading', 'transitToMaintenance', 'maintenance'] as const;
+const getMkorSegmentsWithDates = (mkor: MkorUnit, job: MkorJob) =>
+  buildJobSegmentsWithDates(mkor, job);
 
-  stages.forEach((stage, index) => {
-    const duration = segments[index] || 0;
-    if (duration > 0) {
-      const endDate = addDays(currentDate, duration - 1);
-      endDate.setHours(23, 59, 59, 999);
-      result.push({
-        stage,
-        start: new Date(currentDate),
-        end: endDate,
-        duration,
-        index,
-      });
-      const next = addDays(endDate, 1);
-      next.setHours(0, 0, 0, 0);
-      currentDate = next;
-    }
+const parseReportDate = (value: string): Date | null => {
+  if (!value) return null;
+  if (/^\d{2}\.\d{2}\.\d{4}$/.test(value)) {
+    const [d, m, y] = value.split('.');
+    const date = new Date(`${y}-${m}-${d}`);
+    return isValid(date) ? date : null;
+  }
+  const date = parseISO(value);
+  return isValid(date) ? date : null;
+};
+
+const getMaintenanceTimelineRange = (
+  maintenanceMkors: Array<{ _debug?: { maintenanceSegments?: Array<{ maintenanceStart: string; maintenanceEnd: string }> } }>,
+  reportStart: string,
+  reportEnd: string,
+) => {
+  const bounds: Date[] = [];
+  maintenanceMkors.forEach((mkor) => {
+    mkor._debug?.maintenanceSegments?.forEach((ms) => {
+      const start = parseReportDate(ms.maintenanceStart);
+      const end = parseReportDate(ms.maintenanceEnd);
+      if (start) bounds.push(start);
+      if (end) bounds.push(end);
+    });
   });
-  return result;
+
+  const reportStartDate = parseReportDate(reportStart);
+  const reportEndDate = parseReportDate(reportEnd);
+  if (!reportStartDate || !reportEndDate || bounds.length === 0) {
+    return { start: reportStart, end: reportEnd };
+  }
+
+  let min = new Date(Math.min(...bounds.map((d) => d.getTime())));
+  let max = new Date(Math.max(...bounds.map((d) => d.getTime())));
+  min = addDays(min, -7);
+  max = addDays(max, 7);
+
+  if (min < reportStartDate) min = reportStartDate;
+  if (max > reportEndDate) max = reportEndDate;
+
+  return {
+    start: format(min, 'yyyy-MM-dd'),
+    end: format(max, 'yyyy-MM-dd'),
+  };
 };
 
 // Специальный компонент для календаря аренды
@@ -688,37 +710,26 @@ const MaintenanceReport: React.FC<{
   endDate: string;
   mkorUnits: MkorUnit[];
 }> = ({ startDate, endDate, mkorUnits }) => {
-  // Отладочная информация
-  console.log('MaintenanceReport - входные данные:', {
-    startDate,
-    endDate,
-    reportPeriod: `${startDate} - ${endDate}`,
-    mkorUnitsCount: mkorUnits.length,
-    mkorUnits: mkorUnits.map(m => ({
-      name: m.name,
-      jobsCount: m.jobs?.length || 0,
-      jobs: m.jobs?.map(j => ({ customer: j.customer, start: j.start }))
-    }))
-  });
-  
-  // Проверяем, включает ли период дату 20.09.2025
-  const targetDate = parseISO('2025-09-20');
-  const reportStart = parseISO(startDate);
-  const reportEnd = parseISO(endDate);
-  console.log('Проверка периода для 20.09.2025:', {
-    targetDate: targetDate.toISOString(),
-    reportStart: reportStart.toISOString(),
-    reportEnd: reportEnd.toISOString(),
-    isInPeriod: targetDate >= reportStart && targetDate <= reportEnd
-  });
-  
-  // Проверяем, что даты выбраны
   if (!startDate || !endDate) {
     return (
       <div className="flex items-center justify-center h-64 text-muted-foreground">
         <div className="text-center">
           <Calendar className="w-12 h-12 mx-auto mb-4" />
           <p>Выберите отчётный период для просмотра данных</p>
+        </div>
+      </div>
+    );
+  }
+
+  const reportStart = parseReportDate(startDate);
+  const reportEnd = parseReportDate(endDate);
+
+  if (!reportStart || !reportEnd || reportStart > reportEnd) {
+    return (
+      <div className="flex items-center justify-center h-64 text-muted-foreground">
+        <div className="text-center">
+          <Calendar className="w-12 h-12 mx-auto mb-4" />
+          <p>Укажите корректный отчётный период</p>
         </div>
       </div>
     );
@@ -741,23 +752,6 @@ const MaintenanceReport: React.FC<{
       
       if (!maintenanceSegment) continue;
       
-      // Проверяем, попадает ли ТОИР в выбранный период
-      const reportStart = parseISO(startDate);
-      const reportEnd = parseISO(endDate);
-      
-      // Отладочная информация для DN-1400
-      if (mkor.name === 'DN-1400') {
-        console.log('DN-1400 ТОИР проверка:', {
-          jobCustomer: job.customer,
-          jobStart: job.start,
-          maintenanceStart: maintenanceSegment.start,
-          maintenanceEnd: maintenanceSegment.end,
-          reportStart,
-          reportEnd,
-          isInPeriod: maintenanceSegment.start <= reportEnd && maintenanceSegment.end >= reportStart
-        });
-      }
-      
       if (maintenanceSegment.start <= reportEnd && maintenanceSegment.end >= reportStart) {
         return true;
       }
@@ -778,9 +772,8 @@ const MaintenanceReport: React.FC<{
     );
   }
 
-  // Создаём МКОР с правильными сегментами для ТОИР
-  const maintenanceMkors = mkorsWithMaintenance.map(mkor => {
-    // Находим все работы с ТОИР в выбранном периоде
+  const maintenanceMkors = mkorsWithMaintenance
+    .map((mkor) => {
     const maintenanceSegments = [];
     
     for (const job of mkor.jobs!) {
@@ -788,9 +781,6 @@ const MaintenanceReport: React.FC<{
       const maintenanceSegment = allSegments.find(seg => seg.stage === 'maintenance');
       
       if (maintenanceSegment) {
-        const reportStart = parseISO(startDate);
-        const reportEnd = parseISO(endDate);
-        
         if (maintenanceSegment.start <= reportEnd && maintenanceSegment.end >= reportStart) {
           maintenanceSegments.push({
             job,
@@ -801,15 +791,14 @@ const MaintenanceReport: React.FC<{
     }
     
     if (maintenanceSegments.length === 0) {
-      return { ...mkor, segments: [] };
+      return null;
     }
     
-    // Создаём МКОР с сегментами ТОИР
-    const maintenanceMkor = {
+    return {
       ...mkor,
       start: format(maintenanceSegments[0].segment.start, 'yyyy-MM-dd'),
-      segments: maintenanceSegments.map(ms => ms.segment.duration), // Все длительности ТОИР
-      jobs: [], // Убираем jobs, чтобы MkorTimeline использовал mkor.start и mkor.segments
+      segments: maintenanceSegments.map(ms => ms.segment.duration),
+      jobs: [],
       _debug: {
         maintenanceSegments: maintenanceSegments.map(ms => ({
           job: ms.job,
@@ -818,29 +807,31 @@ const MaintenanceReport: React.FC<{
           maintenanceDuration: ms.segment.duration
         }))
       }
-    } as any;
-    
-    console.log('Maintenance MKOR created:', {
-      name: maintenanceMkor.name,
-      start: maintenanceMkor.start,
-      segments: maintenanceMkor.segments,
-      debug: maintenanceMkor._debug
-    });
-    
-    return maintenanceMkor;
-  });
+    } as MkorUnit & {
+      _debug: {
+        maintenanceSegments: Array<{
+          job: MkorJob;
+          maintenanceStart: string;
+          maintenanceEnd: string;
+          maintenanceDuration: number;
+        }>;
+      };
+    };
+  })
+    .filter((mkor): mkor is NonNullable<typeof mkor> => mkor !== null);
 
-  console.log('MaintenanceReport - Final data:', {
-    selectedPeriod: { startDate, endDate },
-    mkorsWithMaintenanceCount: mkorsWithMaintenance.length,
-    maintenanceMkorsCount: maintenanceMkors.length,
-    maintenanceMkors: maintenanceMkors.map(m => ({
-      name: m.name,
-      start: m.start,
-      segments: m.segments,
-      hasJobs: !!m.jobs?.length
-    }))
-  });
+  if (maintenanceMkors.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-64 text-muted-foreground">
+        <div className="text-center">
+          <Wrench className="w-12 h-12 mx-auto mb-4" />
+          <p>Нет ТОИР в заданный период</p>
+        </div>
+      </div>
+    );
+  }
+
+  const timelineRange = getMaintenanceTimelineRange(maintenanceMkors, startDate, endDate);
 
   return (
     <div className="space-y-6">
@@ -878,8 +869,8 @@ const MaintenanceReport: React.FC<{
             <div className="overflow-x-auto pb-4" style={{ scrollbarGutter: 'both-edges', overflowY: 'hidden' }}>
             <MkorTimeline 
               mkorUnits={maintenanceMkors}
-              startDate={startDate}
-              endDate={endDate}
+              startDate={timelineRange.start}
+              endDate={timelineRange.end}
               onMkorUnitsChange={() => {}}
             />
           </div>
@@ -900,33 +891,27 @@ const MaintenanceReport: React.FC<{
                </tr>
              </thead>
              <tbody>
-               {(() => {
-                 // Создаем массив всех строк таблицы
-                 const tableRows = maintenanceMkors.flatMap(maintenanceMkor => 
-                   maintenanceMkor._debug.maintenanceSegments.map((ms, index) => ({
+               {maintenanceMkors
+                 .flatMap((maintenanceMkor) =>
+                   (maintenanceMkor._debug?.maintenanceSegments ?? []).map((ms, index) => ({
                      mkorName: maintenanceMkor.name,
                      maintenanceDuration: ms.maintenanceDuration,
                      maintenanceStartDate: ms.maintenanceStart,
                      maintenanceEndDate: ms.maintenanceEnd,
-                     location: ms.job.customer + (ms.job.lpu ? `\n(${ms.job.lpu})` : ''),
+                     location: `${ms.job.customer ?? 'Не указан'}${ms.job.lpu ? `\n(${ms.job.lpu})` : ''}`,
                      key: `${maintenanceMkor.id}-${index}`,
-                     startTime: parseISO(ms.maintenanceStart).getTime()
-                   }))
-                 );
-                 
-                 // Сортируем по дате начала
-                 tableRows.sort((a, b) => a.startTime - b.startTime);
-                 
-                 // Рендерим отсортированные строки
-                 return tableRows.map(row => (
+                     startTime: parseReportDate(ms.maintenanceStart)?.getTime() ?? 0,
+                   })),
+                 )
+                 .sort((a, b) => a.startTime - b.startTime)
+                 .map((row) => (
                    <tr key={row.key} className="border-b border-border/50">
                      <td className="p-2 font-medium w-1/8">{row.mkorName}</td>
                      <td className="p-2 w-1/8">{row.maintenanceDuration} дн.</td>
-                     <td className="p-2 w-1/6">{row.maintenanceStartDate}-{row.maintenanceEndDate}</td>
+                     <td className="p-2 w-1/6">{row.maintenanceStartDate} — {row.maintenanceEndDate}</td>
                      <td className="p-2 w-1/2 whitespace-pre-line">{row.location}</td>
                    </tr>
-                 ));
-               })()}
+                 ))}
              </tbody>
            </table>
          </div>
@@ -971,15 +956,20 @@ export const Reports: React.FC<ReportsProps> = ({
   const [reportStartDate, setReportStartDate] = useState('');
   const [reportEndDate, setReportEndDate] = useState('');
 
-  // Загрузка сохранённого периода из localStorage
+  // Загрузка сохранённого периода из localStorage или границ проекта
   useEffect(() => {
     const savedStart = localStorage.getItem('reportStartDate');
     const savedEnd = localStorage.getItem('reportEndDate');
     if (savedStart && savedEnd) {
       setReportStartDate(savedStart);
       setReportEndDate(savedEnd);
+      return;
     }
-  }, []);
+    if (projectStart && projectEnd) {
+      setReportStartDate(projectStart);
+      setReportEndDate(projectEnd);
+    }
+  }, [projectStart, projectEnd]);
 
   // Сохранение периода в localStorage
   useEffect(() => {

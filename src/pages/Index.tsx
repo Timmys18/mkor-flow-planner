@@ -329,7 +329,7 @@ const Index = () => {
                       Создать отчет
                     </Button>
                     <span className="text-sm text-muted-foreground">
-                      Перетащите для изменения порядка и времени
+                      Потяните правый край этапа для изменения длительности
                     </span>
                   </div>
                 </div>
@@ -341,6 +341,7 @@ const Index = () => {
                   scrollRef={mkorTimelineScrollRef}
                   onScroll={handleMkorScroll}
                   mode="full"
+                  interactive
                 />
                 <TransportChart
                   startDate={startDate}

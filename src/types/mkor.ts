@@ -1,6 +1,52 @@
 // Типы данных МКОР на основе технических характеристик
 
-import { differenceInCalendarDays, parseISO } from 'date-fns';
+import { addDays, differenceInCalendarDays, parseISO } from 'date-fns';
+
+export const STAGE_KEYS = [
+  'transitToObject',
+  'unloading',
+  'working',
+  'loading',
+  'transitToMaintenance',
+  'maintenance',
+] as const;
+
+export type StageKey = typeof STAGE_KEYS[number];
+
+export interface JobSegmentWithDates {
+  stage: StageKey;
+  start: Date;
+  end: Date;
+  duration: number;
+  index: number;
+}
+
+/** Локальная календарная дата без смещения из-за UTC в ISO-строках */
+export function parseCalendarDate(value: string | Date): Date {
+  if (value instanceof Date) {
+    const copy = new Date(value);
+    copy.setHours(0, 0, 0, 0);
+    return copy;
+  }
+  const datePart = value.includes('T') ? value.slice(0, 10) : value.split(' ')[0];
+  const parts = datePart.split('-').map(Number);
+  if (parts.length === 3 && parts.every((part) => !Number.isNaN(part))) {
+    return new Date(parts[0], parts[1] - 1, parts[2]);
+  }
+  const fallback = parseISO(value);
+  fallback.setHours(0, 0, 0, 0);
+  return fallback;
+}
+
+/** Сколько календарных дней занимает этап (1.5 дня → 2 календарных дня) */
+export function getCalendarSpanDays(duration: number): number {
+  if (duration <= 0) return 0;
+  return Math.max(1, Math.ceil(duration));
+}
+
+export function stageRequiresTransport(stage: StageKey): boolean {
+  return ['transitToObject', 'unloading', 'loading', 'transitToMaintenance'].includes(stage);
+}
 
 export interface MkorSpecs {
   diameter: number;
@@ -253,43 +299,90 @@ export function getJobSegments(mkor: MkorUnit, job: MkorJob): number[] {
   return Array.isArray(segArr) ? segArr : [];
 }
 
+/** Сегменты работы с календарными датами — единая логика для планировщика и транспорта */
+export function buildJobSegmentsWithDates(mkor: MkorUnit, job: MkorJob): JobSegmentWithDates[] {
+  if (!job?.start) return [];
+
+  const segmentValues = getJobSegments(mkor, job);
+  const result: JobSegmentWithDates[] = [];
+  let currentDate = parseCalendarDate(job.start);
+
+  STAGE_KEYS.forEach((stage, index) => {
+    const duration = segmentValues[index] || 0;
+    if (duration <= 0) return;
+
+    const calendarDays = getCalendarSpanDays(duration);
+    const endDate = addDays(currentDate, calendarDays - 1);
+    endDate.setHours(23, 59, 59, 999);
+
+    result.push({
+      stage,
+      start: new Date(currentDate),
+      end: endDate,
+      duration,
+      index,
+    });
+
+    currentDate = addDays(endDate, 1);
+    currentDate.setHours(0, 0, 0, 0);
+  });
+
+  return result;
+}
+
+export function getJobStageOnDate(
+  mkor: MkorUnit,
+  job: MkorJob,
+  day: Date,
+): {
+  stage: StageKey;
+  requiresTransport: boolean;
+  segmentIndex: number;
+  duration: number;
+  isFirst: boolean;
+  isLast: boolean;
+  dayPosition: number;
+} | null {
+  const dayDate = parseCalendarDate(day);
+  const segments = buildJobSegmentsWithDates(mkor, job);
+
+  for (const segment of segments) {
+    const start = parseCalendarDate(segment.start);
+    const end = parseCalendarDate(segment.end);
+    if (dayDate >= start && dayDate <= end) {
+      const dayPosition = differenceInCalendarDays(dayDate, start);
+      return {
+        stage: segment.stage,
+        requiresTransport: stageRequiresTransport(segment.stage),
+        segmentIndex: segment.index,
+        duration: segment.duration,
+        isFirst: dayPosition === 0,
+        isLast: dayDate.getTime() === end.getTime(),
+        dayPosition,
+      };
+    }
+  }
+
+  return null;
+}
+
 // Функция для определения этапа МКОР на конкретную дату
 export function getMkorStageOnDate(mkor: MkorUnit, date: Date, job?: MkorJob): {
   stage: keyof typeof STAGE_NAMES;
   requiresTransport: boolean;
-  progress?: number; // прогресс в рамках дня (0-1) для дробных этапов
+  progress?: number;
 } | null {
-  // Парсим дату начала строго как локальный календарный день, чтобы избежать смещения по часовым поясам
-  const startDate = typeof mkor.start === 'string' ? parseISO(mkor.start) : new Date(mkor.start);
-  startDate.setHours(0, 0, 0, 0);
-  const localDate = new Date(date);
-  localDate.setHours(0, 0, 0, 0);
-  const daysDiff = differenceInCalendarDays(localDate, startDate);
-  
-  if (daysDiff < 0) return null;
-  
-  // Используем сегменты работы или стандартные сегменты МКОР
-  const segments = job ? getJobSegments(mkor, job) : mkor.segments;
-  
-  let currentDay = 0;
-  const stages: (keyof typeof STAGE_NAMES)[] = [
-    'transitToObject', 'unloading', 'working', 'loading', 'transitToMaintenance', 'maintenance'
-  ];
-  
-  for (let i = 0; i < stages.length; i++) {
-    const segmentDuration = segments[i] || 0;
-    if (daysDiff >= currentDay && daysDiff < currentDay + segmentDuration) {
-      const stage = stages[i];
-      const requiresTransport = ['transitToObject', 'unloading', 'loading', 'transitToMaintenance'].includes(stage);
-      
-      // Вычисляем прогресс в рамках дня для дробных этапов
-      const dayProgress = daysDiff - currentDay;
-      const progress = dayProgress < 1 ? dayProgress : undefined;
-      
-      return { stage, requiresTransport, progress };
-    }
-    currentDay += segmentDuration;
-  }
-  
-  return null;
+  const targetJob: MkorJob = job ?? {
+    id: '',
+    start: mkor.start,
+  };
+
+  const info = getJobStageOnDate(mkor, targetJob, date);
+  if (!info) return null;
+
+  return {
+    stage: info.stage,
+    requiresTransport: info.requiresTransport,
+    progress: info.duration % 1 !== 0 && info.dayPosition === 0 ? info.duration % 1 : undefined,
+  };
 }
