@@ -10,6 +10,7 @@
     "build:prod": "prisma generate && vite build",
     "postinstall": "prisma generate",
     "start:prod": "npx tsx src/server.ts",
+    "start:render": "npx prisma migrate deploy && npm run bootstrap:demo && npm run start:prod",
     "bootstrap:demo": "npx tsx scripts/bootstrap-demo.ts",
     "deploy:prepare": "npm run build:prod && npx prisma migrate deploy && npm run bootstrap:demo",
     "build:dev": "vite build --mode development",
