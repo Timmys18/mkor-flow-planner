@@ -5,7 +5,7 @@ services:
     plan: free
     region: frankfurt
     branch: main
-    buildCommand: npm install --include=dev && npm run build:prod
+    buildCommand: npm run build:prod
     startCommand: npm run start:prod
     healthCheckPath: /health
     envVars:
