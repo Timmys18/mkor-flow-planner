@@ -1,8 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { execSync } from 'node:child_process';
 
-const prisma = new PrismaClient();
-
 const DEMO_INVENTORY = [
   { diameter: 200, count: 2, availableFrom: '2025-07-30' },
   { diameter: 500, count: 2, availableFrom: '2025-08-11' },
@@ -105,8 +103,8 @@ const DEMO_MKOR = [
   },
 ];
 
-async function main() {
-  const mkorCount = await prisma.mkorUnit.count();
+async function bootstrapDemoIfEmpty(client: PrismaClient) {
+  const mkorCount = await client.mkorUnit.count();
   if (mkorCount > 0) {
     console.log('Demo bootstrap skipped: database already has MKOR data.');
     return;
@@ -121,7 +119,7 @@ async function main() {
   }
 
   for (const item of DEMO_INVENTORY) {
-    await prisma.mkorInventory.create({
+    await client.mkorInventory.create({
       data: {
         diameter: item.diameter,
         count: item.count,
@@ -131,7 +129,7 @@ async function main() {
   }
 
   for (const supply of DEMO_TRANSPORT) {
-    await prisma.transportSupply.create({
+    await client.transportSupply.create({
       data: {
         date: new Date(supply.date),
         tractors: supply.tractors,
@@ -142,7 +140,7 @@ async function main() {
   }
 
   for (const mkor of DEMO_MKOR) {
-    const unit = await prisma.mkorUnit.create({
+    const unit = await client.mkorUnit.create({
       data: {
         name: mkor.name,
         diameter: mkor.diameter,
@@ -152,7 +150,7 @@ async function main() {
     });
 
     for (const job of mkor.jobs) {
-      await prisma.mkorJob.create({
+      await client.mkorJob.create({
         data: {
           start: new Date(job.start),
           customer: job.customer,
@@ -168,11 +166,20 @@ async function main() {
   console.log('Demo bootstrap complete.');
 }
 
-main()
-  .catch((error) => {
+async function main() {
+  const prisma = new PrismaClient();
+  try {
+    await bootstrapDemoIfEmpty(prisma);
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+if (process.argv[1]?.replace(/\\/g, '/').includes('bootstrap-demo')) {
+  main().catch((error) => {
     console.error(error);
     process.exit(1);
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
   });
+}
+
+export { bootstrapDemoIfEmpty };

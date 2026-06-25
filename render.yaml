@@ -6,7 +6,7 @@ services:
     region: frankfurt
     branch: main
     buildCommand: npm install --include=dev && npm run build:prod
-    startCommand: npm run start:render
+    startCommand: npm run start:prod
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV

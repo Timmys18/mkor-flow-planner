@@ -3,6 +3,7 @@ import cors from 'cors';
 import bodyParser from 'body-parser';
 import path from 'path';
 import fs from 'fs';
+import { execSync } from 'node:child_process';
 import { PrismaClient } from '@prisma/client';
 import { YandexMapsService, CoordinateUtils } from './services/yandexMaps';
 import dotenv from 'dotenv';
@@ -472,6 +473,21 @@ if (isProduction && fs.existsSync(distPath)) {
   });
 }
 
+async function initProductionDatabase() {
+  console.log('Running database migrations...');
+  execSync('npx prisma migrate deploy', { stdio: 'inherit' });
+
+  const { bootstrapDemoIfEmpty } = await import('../scripts/bootstrap-demo');
+  await bootstrapDemoIfEmpty(prisma);
+  console.log('Database ready.');
+}
+
 app.listen(port, '0.0.0.0', () => {
   console.log(`MKOR planner running on http://0.0.0.0:${port}`);
+
+  if (isProduction) {
+    void initProductionDatabase().catch((error) => {
+      console.error('Database initialization failed:', error);
+    });
+  }
 }); 
